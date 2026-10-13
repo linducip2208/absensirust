@@ -1,0 +1,14 @@
+AttendX Rust
+Versi aplikasi : 1.0.0 (build 2, 2026-10-14)
+Versi database : 7 (migrasi v1-v7: +app_settings, +shift_swaps)
+Target         : Windows 10/11 x64
+Tanggal build  : 2026-10-13
+Zona waktu     : Asia/Jakarta (WIB)
+Mode           : Offline (tanpa internet, tanpa CDN)
+
+Biner:
+- AttendX-Rust.exe (portable)
+- Installer\AttendX Rust_1.0.0_x64-setup.exe (NSIS)
+
+Status SDK hardware: BELUM ADA yang teruji (mock SIMULATED untuk demo/test).
+Lihat Dokumen\SDK_INVENTORY.md dan Dokumen\KNOWN_LIMITATIONS.md.

@@ -1,0 +1,24 @@
+node_modules/
+dist/
+src-tauri/target/
+*.log
+.env
+# Biner SDK vendor (lihat vendor_sdk/README.md untuk unduh ulang).
+# Hanya file teks kecil (README, daftar method) yang ikut repo.
+vendor_sdk/**/*.zip
+vendor_sdk/**/*.nupkg
+vendor_sdk/**/*.dll
+vendor_sdk/**/*.exe
+vendor_sdk/**/*.pdf
+vendor_sdk/**/*.docx
+vendor_sdk/**/*.rar
+vendor_sdk/manual_full.txt
+# Hasil staging DLL runtime (dibangkitkan via vendor_sdk/stage.ps1).
+src-tauri/sdk/
+src-tauri/target/
+# Cache unduhan SDK (dibangkitkan via vendor_sdk/download.ps1; yang ikut repo
+# hanya README.md, *.ps1, izkem_methods.txt di root vendor_sdk/).
+vendor_sdk/ZKTeco-Standalone-SDK/
+vendor_sdk/zkteco-x64/
+vendor_sdk/solution-6.3.1.54/
+vendor_sdk/Hikvision-Set/

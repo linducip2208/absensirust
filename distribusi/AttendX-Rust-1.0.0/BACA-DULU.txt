@@ -1,0 +1,28 @@
+AttendX Rust 1.0.0 — Paket Distribusi Windows x64
+================================================
+
+ISI FOLDER INI:
+1. AttendX-Rust.exe ............. aplikasi portable (langsung jalan, tanpa install)
+2. Installer\ .................... setup wizard NSIS untuk instalasi permanen
+3. Dokumen\ ...................... README + 11 dokumen (instalasi, manual, SDK, keamanan, dsb.)
+4. vendor-sdk\ ................... TEMPAT file SDK vendor (MASIH KOSONG - lihat bawah)
+5. BACA-DULU.txt ................. file ini
+6. VERSI.txt ..................... info versi
+
+CARA PAKAI CEPAT:
+- Coba cepat: klik 2x AttendX-Rust.exe, buat admin pertama, langsung pakai.
+- Instal permanen: jalankan file di folder Installer\, ikuti wizard.
+- Data tersimpan di: %APPDATA%\AttendX\attendx.db (SQLite, offline, WIB).
+
+TENTANG FOLDER vendor-sdk (PENTING):
+- Folder vendor-sdk\ MASIH KOSONG karena file SDK mesin absensi adalah milik
+  vendor resmi dan TIDAK BOLEH diunduh sembarangan dari internet.
+- Jangan menaruh DLL acak dari internet ke sini: berisiko malware dan
+  melanggar lisensi vendor.
+- Cara mendapatkan SDK asli: minta ke distributor/reseller mesin absensi Anda
+  (biasanya diberikan setelah pembelian/registrasi perangkat), sesuai merek
+  dan model mesin yang dipakai.
+- Setelah file SDK asli didapat, taruh di subfolder yang sesuai
+  (time-tech-ac6\, zkteco\, hikvision\, solution\) lalu hubungi pengembang
+  untuk mengaktifkan adapter nyatanya. Daftar file yang dibutuhkan ada di
+  tiap subfolder + Dokumen\SDK_INVENTORY.md.

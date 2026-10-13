@@ -1,0 +1,20 @@
+@import '@tabler/core/dist/css/tabler.min.css';
+
+.brand-badge {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #206bc4;
+  color: #fff;
+  font-weight: 700;
+}
+.simulated-tag {
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.empty-state { padding: 3rem 1rem; text-align: center; color: #6c7a91; }
+.table-responsive tr td { vertical-align: middle; }
