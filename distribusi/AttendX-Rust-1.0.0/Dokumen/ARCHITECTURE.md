@@ -10,9 +10,9 @@
 │  auth guard per-perintah (permission, bukan sekadar UI)  │
 ├──────────────┬──────────────┬──────────────┬─────────────┤
 │ attendance/  │ devices/     │ sync/        │ reports/    │
-│ shift window │ trait+mock+  │ checkpoint,  │ CSV/XLSX/   │
-│ + engine     │ registry     │ retry,       │ PDF         │
-│ (murni)      │              │ idempotent   │             │
+│ shift window │ trait +      │ checkpoint,  │ CSV/XLSX/   │
+│ + engine     │ ZK/Hikvision │ retry,       │ PDF multi-  │
+│ (murni)      │ +mock+reg.   │ idempotent   │ halaman     │
 ├──────────────┴──────────────┴──────────────┴─────────────┤
 │ db/repo (rusqlite, parameter binding, transaksi)         │
 │ SQLite %APPDATA%\AttendX\attendx.db + migrasi versioned  │
@@ -20,8 +20,8 @@
 │ auth (Argon2, session, rate-limit) · backup · scheduler  │
 │ timex (Asia/Jakarta) · errors                            │
 └──────────────────────────────────────────────────────────┘
-│ SDK vendor (MASA DEPAN): FFI/DLL per dokumentasi vendor  │
-│  helper process bila DLL 32-bit vs proses x64            │
+│ SDK vendor: ZKEM via COM CZKEM x64, HCNetSDK via FFI     │
+│ (DLL + registrasi manual; tanpa hardware = error jelas) │
 └──────────────────────────────────────────────────────────┘
 ```
 

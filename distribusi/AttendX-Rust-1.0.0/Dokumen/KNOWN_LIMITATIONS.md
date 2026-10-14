@@ -21,8 +21,10 @@
    berlaku segera (menu Pengaturan).
 6. ~~Lampiran & foto via path manual~~ → pemilih file + unggah bervalidasi
    (foto ≤2 MB, lampiran ≤5 MB) ke direktori data.
-7. **Ekspor PDF** = writer minimal satu halaman teks (kini dengan judul,
-   waktu pembuatan, dan jumlah baris); tata letak kompleks belum ada.
+7. **Ekspor PDF** = writer hand-rolled multi-halaman A4 (judul, meta, header
+   tabel berulang per halaman, nomor halaman, ringkasan; font standar
+   Helvetica; transliterasi ASCII). Tata letak kompleks (logo, grafik,
+   multi-kolom) belum ada.
 8. ~~Kalender shift visual belum ada~~ → kalender mingguan + salin minggu +
    bulk dengan pratinjau + deteksi bentrok/kosong + tukar shift berpersetujuan
    (menu Jadwal & Kalender). Drag-and-drop dan rotasi otomatis lanjutan belum ada.
