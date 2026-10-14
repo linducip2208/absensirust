@@ -74,6 +74,8 @@ pub fn permissions(role: &Role) -> HashSet<&'static str> {
         Role::Supervisor => {
             for p in [
                 "attendance.view",
+                "employee.view",
+                "leave.view",
                 "leave.approve",
                 "report.view",
                 "shift.view",
@@ -144,7 +146,11 @@ impl SessionStore {
     }
     pub fn create(&self, user_id: &str, username: &str, role: Role) -> String {
         let token = uuid::Uuid::new_v4().to_string();
-        self.inner.lock().unwrap().insert(
+        let mut map = self.inner.lock().unwrap();
+        // Purge sesi kedaluwarsa agar map tak bocor.
+        let timeout = *self.timeout_secs.read().unwrap();
+        map.retain(|_, s| s.created_at.elapsed().as_secs() <= timeout);
+        map.insert(
             token.clone(),
             Session {
                 token: token.clone(),
@@ -243,22 +249,28 @@ fn fails_map() -> &'static Mutex<HashMap<String, (u32, std::time::Instant)>> {
     FAILS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn key_of(username: &str) -> String {
+    username.trim().to_lowercase()
+}
+
 fn is_locked_out(username: &str) -> bool {
-    let m = fails_map().lock().unwrap();
-    matches!(m.get(username), Some((n, t)) if *n >= 5 && t.elapsed().as_secs() < 300)
+    let mut m = fails_map().lock().unwrap();
+    // Purge entri basi agar map tak bocor.
+    m.retain(|_, (n, t)| *n >= 5 && t.elapsed().as_secs() < 300);
+    matches!(m.get(&key_of(username)), Some((n, t)) if *n >= 5 && t.elapsed().as_secs() < 300)
 }
 
 fn mark_fail(username: &str) {
     let mut m = fails_map().lock().unwrap();
     let e = m
-        .entry(username.to_string())
+        .entry(key_of(username))
         .or_insert((0, std::time::Instant::now()));
     e.0 += 1;
     e.1 = std::time::Instant::now();
 }
 
 fn clear_fail(username: &str) {
-    fails_map().lock().unwrap().remove(username);
+    fails_map().lock().unwrap().remove(&key_of(username));
 }
 
 #[cfg(test)]

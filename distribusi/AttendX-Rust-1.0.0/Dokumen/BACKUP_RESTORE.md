@@ -13,11 +13,14 @@ Lokasi default: `%APPDATA%\AttendX\` → `attendx.db`, `backups\`.
 
 ## Restore
 
-1. Isi path file backup → *Restore dari file*.
-2. Aplikasi memvalidasi header `SQLite format 3` — file bukan-DB **ditolak**
-   sebelum menyentuh DB aktif.
-3. Salinan pengaman `attendx.pre-restore-<waktu>.db` dibuat otomatis.
-4. File backup disalin menjadi DB aktif → **restart aplikasi**.
+1. *Pilih file…* (pemilih file, hanya `.db`) — path bebas di luar folder
+   backups **ditolak** (anti path traversal).
+2. Aplikasi memvalidasi header `SQLite format 3` + `integrity_check`
+   read-only — file rusak **ditolak** sebelum menyentuh DB aktif.
+3. Checkpoint WAL + salinan pengaman `attendx.pre-restore-<waktu>.db` dibuat
+   otomatis; WAL/SHM basi dibuang.
+4. File backup disalin menjadi DB aktif → koneksi dibuka ulang + verifikasi
+   integritas → **langsung aktif tanpa restart**.
 
 ## Kesehatan
 

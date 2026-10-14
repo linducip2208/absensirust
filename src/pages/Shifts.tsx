@@ -24,7 +24,7 @@ const ASSIGN: Column[] = [
   { key: 'employee_id', label: 'Employee ID', required: true },
   { key: 'shift_id', label: 'Shift ID', required: true },
   { key: 'effective_date', label: 'Tgl efektif', type: 'date', required: true },
-  { key: 'end_date', label: 'Tgl akhir' },
+  { key: 'end_date', label: 'Tgl akhir (kosong = berlaku terus)', type: 'date' },
   { key: 'created_by', label: 'Dibuat oleh' },
 ];
 

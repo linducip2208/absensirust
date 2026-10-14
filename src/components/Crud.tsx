@@ -92,7 +92,14 @@ export default function Crud({
       for (const c of columns) {
         if (c.readOnly && !isNew) continue;
         if (c.type === 'hidden') continue;
-        payload[c.key] = form[c.key] ?? '';
+        const v = form[c.key] ?? '';
+        // Input tanggal/datetime yang dikosongkan = NULL eksplisit (mis. tgl akhir).
+        if (v === '' && (c.type === 'date' || c.type === 'datetime')) {
+          payload[c.key] = null;
+          continue;
+        }
+        if (v === '' && !c.required) continue;
+        payload[c.key] = v;
       }
       if (isNew) {
         await api.tableCreate(table, payload);

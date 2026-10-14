@@ -1,0 +1,22 @@
+CARA MEMASANG DLL VENDOR (pilih salah satu folder tujuan)
+
+1. Salin file DLL ke SALAH SATU lokasi ini:
+   - Sebelah file AttendX-Rust.exe (folder ini), ATAU
+   - Subfolder sdk\ di sebelah exe, ATAU
+   - %APPDATA%\AttendX\sdk\
+
+2. Khusus ZKTeco / Solution — daftarkan COM sekali sebagai Administrator:
+     regsvr32 zkemkeeper.dll
+   (atau jalankan Register_SDK x64.bat dari paket SDK resmi)
+   Cek dari aplikasi: menu Perangkat → tabel "DLL vendor di mesin ini".
+
+3. Hikvision (HCNetSDK.dll dkk) tidak perlu registrasi, cukup ditaruh.
+
+DARI MANA DLL-NYA (sumber resmi, sudah diverifikasi versi & arsitektur x64):
+- ZKTeco: github.com/ZKTeco/Standalone-SDK + NuGet ZKTecoStandAlonePullSDKx64
+- Solution: support resmi Solution (Standalone SDK 6.3.1.54, x64+x86+manual)
+- Hikvision: paket resmi Device Network SDK di hikvision.com (butuh akun)
+
+CATATAN LISENSI: paket ini TIDAK menyertakan DLL vendor karena izin
+redistribusi belum terverifikasi. Ambil DLL dari sumber resmi di atas,
+atau minta ke distributor/reseller mesin absensi Anda.

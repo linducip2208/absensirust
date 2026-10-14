@@ -24,6 +24,10 @@ export default function Layout({ children, title, breadcrumb }: { children: Reac
   const toast = useToast();
   const user = getUser();
   const role = user?.role ?? '';
+  const roleLabel: Record<string, string> = {
+    super_admin: 'Super Admin', hr_admin: 'HR Admin', supervisor: 'Supervisor',
+    operator_device: 'Operator Device', viewer: 'Viewer',
+  };
 
   const onLogout = async () => {
     try {
@@ -46,7 +50,7 @@ export default function Layout({ children, title, breadcrumb }: { children: Reac
           <div className="collapse navbar-collapse" id="sidebar-menu">
             <ul className="navbar-nav pt-lg-3">
               <li className="nav-item px-3 pb-2 text-secondary" style={{ fontSize: 12 }}>
-                {user?.username} · {role}
+                {user?.username} · {roleLabel[role] ?? role}
               </li>
               {MENU.filter((m) => m.roles.includes('*') || m.roles.includes(role)).map((m) => (
                 <li className="nav-item" key={m.to}>
@@ -109,16 +113,19 @@ function GlobalSearch() {
   const [q, setQ] = useState('');
   const [rows, setRows] = useState<SearchRow[]>([]);
   const [open, setOpen] = useState(false);
+  const [searched, setSearched] = useState(false);
   const go = async (v: string) => {
     setQ(v);
-    if (v.trim().length < 1) {
+    if (v.trim().length < 2) {
       setRows([]);
       setOpen(false);
+      setSearched(false);
       return;
     }
     try {
       const r = await api.searchGlobal(v.trim());
       setRows([...r.employees, ...r.devices]);
+      setSearched(true);
       setOpen(true);
     } catch (e) {
       toast.push('error', e instanceof Error ? e.message : String(e));
@@ -134,7 +141,7 @@ function GlobalSearch() {
         onBlur={() => setTimeout(() => setOpen(false), 200)}
         onFocus={() => rows.length > 0 && setOpen(true)}
       />
-      {open && rows.length > 0 && (
+      {open && (
         <div className="card" style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 1000 }}>
           <div className="list-group list-group-flush">
             {rows.map((r) => (
@@ -150,6 +157,9 @@ function GlobalSearch() {
                 {r.label} <span className="text-secondary">· {r.sub}</span>
               </button>
             ))}
+            {searched && rows.length === 0 && (
+              <div className="list-group-item text-secondary">Tidak ditemukan untuk “{q}”.</div>
+            )}
           </div>
         </div>
       )}

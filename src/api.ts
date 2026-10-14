@@ -52,6 +52,8 @@ export async function invoke<T>(cmd: string, args: Record<string, unknown> = {})
   return tauriInvoke<T>(cmd, args);
 }
 
+/** Kunci argumen HARUS snake_case persis seperti signature command Rust
+ *  di src-tauri/src/lib.rs (Tauri IPC mencocokkan by name). */
 export const api = {
   hasAdmin: () => invoke<boolean>('has_admin'),
   setupAdmin: (username: string, display_name: string, password: string) =>
@@ -62,7 +64,7 @@ export const api = {
   dashboard: (date: string) => invoke<DashboardData>('dashboard', { token: getToken(), date }),
   tableList: (table: string, page: number, perPage: number, search = '', orderBy = '', orderDir = 'asc') =>
     invoke<{ rows: Row[]; total: number }>('table_list', {
-      token: getToken(), table, page, perPage, search, orderBy, orderDir,
+      token: getToken(), table, page, per_page: perPage, search, order_by: orderBy, order_dir: orderDir,
     }),
   tableGet: (table: string, id: string) => invoke<Row>('table_get', { token: getToken(), table, id }),
   tableCreate: (table: string, data: Record<string, unknown>) =>
@@ -71,31 +73,35 @@ export const api = {
     invoke<string>('table_update', { token: getToken(), table, id, data }),
   tableDelete: (table: string, id: string, hard = false) =>
     invoke<string>('table_delete', { token: getToken(), table, id, hard }),
-  deviceTest: (deviceId: string) => invoke<unknown>('device_test', { token: getToken(), deviceId }),
-  deviceSync: (deviceId: string) => invoke<SyncStats>('device_sync', { token: getToken(), deviceId }),
+  deviceTest: (deviceId: string) => invoke<unknown>('device_test', { token: getToken(), device_id: deviceId }),
+  deviceSync: (deviceId: string) => invoke<SyncStats>('device_sync', { token: getToken(), device_id: deviceId }),
   deviceRegistry: () => invoke<RegistryEntry[]>('device_registry'),
-  deviceSdkStatus: () => invoke<SdkStatus[]>('device_sdk_status'),
+  deviceSdkStatus: () => invoke<SdkStatus[]>('device_sdk_status', { token: getToken() }),
   attendanceCompute: (workDate: string, employeeId?: string) =>
     invoke<{ computed: number; date: string }>('attendance_compute', {
-      token: getToken(), workDate, employeeId: employeeId ?? null,
+      token: getToken(), work_date: workDate, employee_id: employeeId ?? null,
     }),
   attendanceReview: () =>
     invoke<{ review: Row[]; unmapped: Row[] }>('attendance_review', { token: getToken() }),
   attendanceCorrect: (attendanceId: string, field: string, newValue: string, reason: string) =>
-    invoke<string>('attendance_correct', { token: getToken(), attendanceId, field, newValue, reason }),
+    invoke<string>('attendance_correct', { token: getToken(), attendance_id: attendanceId, field, new_value: newValue, reason }),
   importPreview: (csvText: string) =>
     invoke<{ headers: string[]; rows: ImportRow[]; errors: string[] }>('employee_import_preview', {
-      token: getToken(), csvText,
+      token: getToken(), csv_text: csvText,
     }),
   importCommit: (rows: Record<string, string>[]) =>
     invoke<{ ok: number; fail: number; messages: string[] }>('employee_import_commit', {
       token: getToken(), rows,
     }),
   reportQuery: (kind: string, f: ReportFilter) =>
-    invoke<{ headers: string[]; rows: string[][] }>('report_query', { token: getToken(), kind, ...f }),
+    invoke<{ headers: string[]; rows: string[][] }>('report_query', {
+      token: getToken(), kind, start: f.start, end: f.end, branch_id: f.branchId,
+      department_id: f.departmentId, shift_id: f.shiftId, status: f.status, employee_id: f.employeeId,
+    }),
   reportExport: (kind: string, format: string, title: string, f: ReportFilter) =>
     invoke<{ format: string; text?: string; base64?: string }>('report_export', {
-      token: getToken(), kind, format, title, ...f,
+      token: getToken(), kind, format, title, start: f.start, end: f.end, branch_id: f.branchId,
+      department_id: f.departmentId, shift_id: f.shiftId, status: f.status, employee_id: f.employeeId,
     }),
   backupCreate: () => invoke<{ file: string }>('backup_create', { token: getToken() }),
   backupRestore: (file: string) => invoke<string>('backup_restore', { token: getToken(), file }),
@@ -104,37 +110,45 @@ export const api = {
   settingsSet: (key: string, value: string) =>
     invoke<string>('settings_set', { token: getToken(), key, value }),
   scheduleWeek: (startDate: string) =>
-    invoke<ScheduleWeek>('schedule_week', { token: getToken(), startDate }),
+    invoke<ScheduleWeek>('schedule_week', { token: getToken(), start_date: startDate }),
   scheduleBulk: (employeeIds: string[], shiftId: string, startDate: string, endDate: string, dryRun: boolean) =>
-    invoke<BulkReport>('schedule_bulk', { token: getToken(), employeeIds, shiftId, startDate, endDate, dryRun }),
+    invoke<BulkReport>('schedule_bulk', {
+      token: getToken(), employee_ids: employeeIds, shift_id: shiftId,
+      start_date: startDate, end_date: endDate, dry_run: dryRun,
+    }),
   scheduleCopyWeek: (srcStart: string, dstStart: string, dryRun: boolean) =>
-    invoke<BulkReport>('schedule_copy_week', { token: getToken(), srcStart, dstStart, dryRun }),
+    invoke<BulkReport>('schedule_copy_week', {
+      token: getToken(), src_start: srcStart, dst_start: dstStart, dry_run: dryRun,
+    }),
   scheduleConflicts: (startDate: string, endDate: string) =>
-    invoke<ConflictReport>('schedule_conflicts', { token: getToken(), startDate, endDate }),
+    invoke<ConflictReport>('schedule_conflicts', { token: getToken(), start_date: startDate, end_date: endDate }),
   swapRequest: (employeeId: string, fromShiftId: string, toShiftId: string, swapDate: string, reason: string) =>
-    invoke<{ id: string }>('swap_request', { token: getToken(), employeeId, fromShiftId, toShiftId, swapDate, reason }),
+    invoke<{ id: string }>('swap_request', {
+      token: getToken(), employee_id: employeeId, from_shift_id: fromShiftId,
+      to_shift_id: toShiftId, swap_date: swapDate, reason,
+    }),
   swapDecide: (swapId: string, approve: boolean) =>
-    invoke<string>('swap_decide', { token: getToken(), swapId, approve }),
+    invoke<string>('swap_decide', { token: getToken(), swap_id: swapId, approve }),
   syncRunAll: () => invoke<SyncAllRow[]>('sync_run_all', { token: getToken() }),
   schedulerGet: () => invoke<SchedulerState>('scheduler_get', { token: getToken() }),
   schedulerSet: (enabled: boolean) => invoke<string>('scheduler_set', { token: getToken(), enabled }),
   saveEmployeePhoto: (employeeId: string, srcPath: string) =>
-    invoke<{ path: string }>('save_employee_photo', { token: getToken(), employeeId, srcPath }),
+    invoke<{ path: string }>('save_employee_photo', { token: getToken(), employee_id: employeeId, src_path: srcPath }),
   saveLeaveAttachment: (requestId: string, srcPath: string) =>
-    invoke<{ path: string }>('save_leave_attachment', { token: getToken(), requestId, srcPath }),
+    invoke<{ path: string }>('save_leave_attachment', { token: getToken(), request_id: requestId, src_path: srcPath }),
   eventsRequeue: (startDate: string, endDate: string) =>
-    invoke<{ requeued: number }>('events_requeue', { token: getToken(), startDate, endDate }),
+    invoke<{ requeued: number }>('events_requeue', { token: getToken(), start_date: startDate, end_date: endDate }),
   deviceFetchUsers: (deviceId: string) =>
-    invoke<DeviceUser[]>('device_fetch_users', { token: getToken(), deviceId }),
+    invoke<DeviceUser[]>('device_fetch_users', { token: getToken(), device_id: deviceId }),
   deviceProvisionUser: (deviceId: string, deviceUserId: string, name: string) =>
-    invoke<string>('device_provision_user', { token: getToken(), deviceId, deviceUserId, name }),
+    invoke<string>('device_provision_user', { token: getToken(), device_id: deviceId, device_user_id: deviceUserId, name }),
   leaveBalances: () => invoke<LeaveBalance[]>('leave_balances', { token: getToken() }),
   searchGlobal: (query: string) =>
     invoke<{ employees: SearchRow[]; devices: SearchRow[] }>('search_global', { token: getToken(), query }),
   scheduleExport: (startDate: string, endDate: string) =>
-    invoke<{ csv: string; count: number }>('schedule_export', { token: getToken(), startDate, endDate }),
+    invoke<{ csv: string; count: number }>('schedule_export', { token: getToken(), start_date: startDate, end_date: endDate }),
   scheduleImportPreview: (csvText: string) =>
-    invoke<{ rows: ScheduleImportRow[]; errors: string[] }>('schedule_import_preview', { token: getToken(), csvText }),
+    invoke<{ rows: ScheduleImportRow[]; errors: string[] }>('schedule_import_preview', { token: getToken(), csv_text: csvText }),
   scheduleImportCommit: (rows: Record<string, unknown>[]) =>
     invoke<{ ok: number; fail: number; messages: string[] }>('schedule_import_commit', { token: getToken(), rows }),
   diagnosticsBundle: () => invoke<{ text: string }>('diagnostics_bundle', { token: getToken() }),

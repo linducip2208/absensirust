@@ -3,11 +3,16 @@
 ## Autentikasi
 
 - Password di-hash **Argon2id** (salt acak per user); tidak ada plaintext di DB/log.
+  `password_hash` tidak pernah keluar via IPC (di-strip di `table_list/get`).
 - **Tanpa kredensial default.** Admin pertama dibuat lewat `setup_admin` yang
   hanya berhasil bila tabel `users` kosong.
+- Pengguna: hanya super_admin; hapus diri sendiri & super_admin terakhir
+  ditolak; ganti password di-hash ulang (kosong = tidak diubah). Audit log
+  tidak bisa dihapus.
 - Sesi = token UUID acak, timeout **8 jam** (kedaluwarsa → masuk ulang =
-  lock sesi otomatis). Tidak ada "ingat saya" permanen.
-- Rate-limit login: 5x gagal per username → kunci 5 menit.
+  lock sesi otomatis, berlaku juga untuk sesi berjalan). Tidak ada "ingat saya" permanen.
+- Rate-limit login: 5x gagal per username (case-insensitive) → kunci 5 menit;
+  entri basi di-purge; sesi kedaluwarsa di-purge saat login baru.
 
 ## Otorisasi (permission-based)
 
@@ -15,7 +20,7 @@
 |---|---|
 | super_admin | semua (`*.*`) + kelola pengguna + backup/restore |
 | hr_admin | karyawan, shift, absensi, cuti, laporan, koreksi |
-| supervisor | lihat absensi, setujui cuti, lihat laporan/shift |
+| supervisor | lihat absensi/karyawan/cuti, setujui cuti, lihat laporan/shift |
 | operator_device | perangkat + sync + lihat absensi |
 | viewer/auditor | lihat absensi + laporan |
 

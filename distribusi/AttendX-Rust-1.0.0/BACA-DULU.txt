@@ -1,28 +1,27 @@
-AttendX Rust 1.0.0 — Paket Distribusi Windows x64
-================================================
+AttendX Rust 1.0.0 — Paket Distribusi Windows x64 (build 6)
+========================================================
 
 ISI FOLDER INI:
 1. AttendX-Rust.exe ............. aplikasi portable (langsung jalan, tanpa install)
 2. Installer\ .................... setup wizard NSIS untuk instalasi permanen
-3. Dokumen\ ...................... README + 11 dokumen (instalasi, manual, SDK, keamanan, dsb.)
-4. vendor-sdk\ ................... TEMPAT file SDK vendor (MASIH KOSONG - lihat bawah)
+3. Dokumen\ ...................... README + 12 dokumen (instalasi, manual, SDK, keamanan, dsb.)
+4. vendor-sdk\ ................... panduan + TEMPAT file DLL vendor (lihat bawah)
 5. BACA-DULU.txt ................. file ini
-6. VERSI.txt ..................... info versi
+6. VERSI.txt ..................... info versi + hasil pengujian
 
 CARA PAKAI CEPAT:
-- Coba cepat: klik 2x AttendX-Rust.exe, buat admin pertama, langsung pakai.
+- Coba cepat: klik 2x AttendX-Rust.exe, buat admin pertama (min. 8 karakter),
+  langsung pakai. Tanpa hardware pun bisa: pakai adapter mock-simulated
+  untuk latihan (selalu berlabel SIMULATED).
 - Instal permanen: jalankan file di folder Installer\, ikuti wizard.
 - Data tersimpan di: %APPDATA%\AttendX\attendx.db (SQLite, offline, WIB).
+  Database lama otomatis dimigrasi tanpa menghilangkan data.
 
-TENTANG FOLDER vendor-sdk (PENTING):
-- Folder vendor-sdk\ MASIH KOSONG karena file SDK mesin absensi adalah milik
-  vendor resmi dan TIDAK BOLEH diunduh sembarangan dari internet.
-- Jangan menaruh DLL acak dari internet ke sini: berisiko malware dan
-  melanggar lisensi vendor.
-- Cara mendapatkan SDK asli: minta ke distributor/reseller mesin absensi Anda
-  (biasanya diberikan setelah pembelian/registrasi perangkat), sesuai merek
-  dan model mesin yang dipakai.
-- Setelah file SDK asli didapat, taruh di subfolder yang sesuai
-  (time-tech-ac6\, zkteco\, hikvision\, solution\) lalu hubungi pengembang
-  untuk mengaktifkan adapter nyatanya. Daftar file yang dibutuhkan ada di
-  tiap subfolder + Dokumen\SDK_INVENTORY.md.
+PAKAI MESIN ABSENSI ASLI:
+1. Baca vendor-sdk\CARA-PASANG-DLL.txt (sumber resmi + cara taruh + registrasi).
+2. Di aplikasi buka menu Perangkat → tabel "DLL vendor di mesin ini" untuk
+   memastikan DLL terdeteksi (Siap), lalu isi IP + config_json perangkat,
+   klik Test koneksi, lalu Sync log.
+3. Adapter yang berfungsi penuh tanpa hardware: mock-simulated (test saja).
+   ZKTeco/Solution butuh DLL + mesin fisik. Hikvision bisa login/info;
+   tarik log butuh dokumen ISAPI/ACS. TIME TECH AC6 belum didukung (tanpa SDK).

@@ -25,6 +25,27 @@ pub fn validate_sqlite(path: &Path) -> AppResult<()> {
     Ok(())
 }
 
+/// Validasi backup lebih dalam: header + integrity_check read-only
+/// (tanpa membuat WAL di sebelah file).
+pub fn validate_backup(path: &Path) -> AppResult<()> {
+    validate_sqlite(path)?;
+    let uri = format!("file:{}?mode=ro", path.display());
+    let conn = rusqlite::Connection::open_with_flags(
+        uri,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+    )
+    .map_err(|e| AppError::Db(e.to_string()))?;
+    let s: String = conn
+        .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+        .map_err(|e| AppError::Db(e.to_string()))?;
+    if s != "ok" {
+        return Err(AppError::Validation(format!(
+            "integrity_check backup gagal: {s}"
+        )));
+    }
+    Ok(())
+}
+
 fn rotate(dir: &Path, keep: usize) -> AppResult<()> {
     let mut files: Vec<_> = std::fs::read_dir(dir)?
         .filter_map(|e| e.ok())
@@ -39,15 +60,27 @@ fn rotate(dir: &Path, keep: usize) -> AppResult<()> {
 }
 
 pub fn restore_db(db_path: &Path, backup_file: &Path) -> AppResult<()> {
-    validate_sqlite(backup_file)?;
+    validate_backup(backup_file)?;
     // Simpan salinan pengaman sebelum replace.
     let stamp = crate::timex::now_wib_string().replace([':', ' '], "-");
     if db_path.exists() {
         let safety = db_path.with_extension(format!("pre-restore-{stamp}.db"));
         std::fs::copy(db_path, &safety)?;
     }
+    // Buang WAL/SHM basi agar koneksi tak membaca halaman lama.
+    remove_wal_sidecars(db_path);
     std::fs::copy(backup_file, db_path)?;
+    if integrity_check(db_path)? != "ok" {
+        return Err(AppError::Db("integrity_check gagal setelah restore".into()));
+    }
     Ok(())
+}
+
+/// Hapus file -wal/-shm di sebelah database (dibuat ulang otomatis).
+pub fn remove_wal_sidecars(db_path: &Path) {
+    for ext in ["db-wal", "db-shm"] {
+        let _ = std::fs::remove_file(db_path.with_extension(ext));
+    }
 }
 
 pub fn integrity_check(db_path: &Path) -> AppResult<String> {

@@ -123,9 +123,30 @@ impl ShiftRule {
         *t >= earliest && *t <= latest
     }
 
+    /// Batas penerimaan event untuk work_date ini (inklusif):
+    /// [shift_start - early_limit, window_end + clockout_limit].
+    pub fn accept_bounds(&self, work_date: &NaiveDate) -> (NaiveDateTime, NaiveDateTime) {
+        let (start, end) = self.window(work_date);
+        (
+            start - chrono::Duration::minutes(self.clockin_early_limit_minutes),
+            end + chrono::Duration::minutes(self.clockout_limit_minutes),
+        )
+    }
+
     pub fn applies_to_weekday(&self, work_date: &NaiveDate) -> bool {
         let wd = work_date.weekday_num_monday();
         self.applicable_days.contains(&wd)
+    }
+}
+
+/// Format HH:MM valid (00:00–23:59)? Untuk validasi tulis, bukan panic baca.
+pub fn valid_hm(s: &str) -> bool {
+    let mut it = s.split(':');
+    match (it.next(), it.next(), it.next()) {
+        (Some(h), Some(m), None) => {
+            matches!((h.parse::<u32>(), m.parse::<u32>()), (Ok(h), Ok(m)) if h < 24 && m < 60)
+        }
+        _ => false,
     }
 }
 
@@ -444,9 +465,7 @@ pub fn group_events_for_shift(
     work_date: &NaiveDate,
     mut events: Vec<NaiveDateTime>,
 ) -> DayEvents {
-    let (start, end) = shift.window(work_date);
-    let earliest = start - chrono::Duration::minutes(shift.clockin_early_limit_minutes);
-    let latest_out = end + chrono::Duration::minutes(shift.clockout_limit_minutes);
+    let (earliest, latest_out) = shift.accept_bounds(work_date);
     events.sort();
     let in_win: Vec<NaiveDateTime> = events
         .into_iter()

@@ -1,13 +1,14 @@
 import { useState } from 'react';
-import { api, downloadFile } from '../api';
+import { api, downloadFile, pickFile } from '../api';
 import Layout from '../components/Layout';
-import { Field, LoadingState, useToast } from '../components/ui';
+import { ConfirmDialog, Field, LoadingState, useToast } from '../components/ui';
 
 export default function Backup() {
   const toast = useToast();
   const [busy, setBusy] = useState(false);
   const [health, setHealth] = useState<{ app: string; db_version: number; integrity: string; wib_now: string } | null>(null);
   const [restoreFile, setRestoreFile] = useState('');
+  const [confirmRestore, setConfirmRestore] = useState(false);
 
   const doHealth = async () => {
     try {
@@ -29,11 +30,24 @@ export default function Backup() {
     }
   };
 
+  const pickRestore = async () => {
+    try {
+      const p = await pickFile([{ name: 'Backup SQLite', extensions: ['db'] }]);
+      if (p) setRestoreFile(p);
+    } catch (e) {
+      toast.push('error', e instanceof Error ? e.message : String(e));
+    }
+  };
+
   const doRestore = async () => {    if (!restoreFile.trim()) {
-      toast.push('error', 'Isi path file backup dulu');
+      toast.push('error', 'Pilih file backup dulu');
       return;
     }
-    if (!confirm('Restore akan MENGGANTI database aktif (salinan pengaman dibuat otomatis). Lanjutkan?')) return;
+    setConfirmRestore(true);
+  };
+
+  const confirmDoRestore = async () => {
+    setConfirmRestore(false);
     setBusy(true);
     try {
       const msg = await api.backupRestore(restoreFile.trim());
@@ -57,11 +71,23 @@ export default function Backup() {
                   {busy ? 'Memproses…' : 'Buat backup sekarang'}
                 </button>
               </div>
-              <Field label="Path file backup untuk restore (divalidasi sebelum mengganti DB aktif)">
-                <input className="form-control" value={restoreFile} onChange={(e) => setRestoreFile(e.target.value)} placeholder="C:\…\attendx-backup-….db" />
+              <Field label="File backup untuk restore (hanya dari folder backups, divalidasi dulu)">
+                <div className="d-flex gap-2">
+                  <input className="form-control" value={restoreFile} onChange={(e) => setRestoreFile(e.target.value)} placeholder="Pilih via tombol…" />
+                  <button className="btn btn-outline-primary text-nowrap" onClick={pickRestore}>Pilih file…</button>
+                </div>
               </Field>
               <button className="btn btn-outline-danger" disabled={busy} onClick={doRestore}>Restore dari file</button>
               {busy && <LoadingState />}
+              {confirmRestore && (
+                <ConfirmDialog
+                  title="Restore database?"
+                  body="Restore akan MENGGANTI database aktif (salinan pengaman dibuat otomatis, file divalidasi dulu)."
+                  confirmLabel="Ya, restore"
+                  onCancel={() => setConfirmRestore(false)}
+                  onConfirm={confirmDoRestore}
+                />
+              )}
             </div>
           </div>
         </div>

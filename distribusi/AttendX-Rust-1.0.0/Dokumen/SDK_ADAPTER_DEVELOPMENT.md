@@ -17,7 +17,11 @@ impl DeviceAdapter for ZktecoAdapter { /* ... */ }
 
 ## 2. FFI DLL
 
-- Gunakan `libloading` (tambahkan dependensi) + signature persis dokumentasi vendor
+- `zkemkeeper.dll` (ZKTeco/Solution) adalah **COM ActiveX**, bukan fungsi C:
+  gunakan pola `devices/zkcom.rs` (CoCreateInstance CZKEM + IDispatch late-binding).
+  CLSID/IID + nama method wajib dibaca dari typelib SDK, bukan dari ingatan.
+- Untuk DLL fungsi-C biasa (mis. `HCNetSDK.dll` Hikvision): gunakan `libloading`
+  + signature persis dokumentasi vendor
   (calling convention `stdcall` vs `cdecl` — salah = crash).
 - Verifikasi arsitektur: `dumpbin /headers vendor.dll | findstr machine`.
 - **DLL 32-bit + proses x64 = tidak bisa di-load langsung.** Solusi:

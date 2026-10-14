@@ -159,7 +159,7 @@ pub mod commands {
         let d = if date.is_empty() {
             timex::today_wib().format("%Y-%m-%d").to_string()
         } else {
-            date
+            parse_date(&date)?.format("%Y-%m-%d").to_string()
         };
         let q = |sql: &str| -> i64 {
             r.query_one(sql, &[], |x| x.get(0))
@@ -184,14 +184,17 @@ pub mod commands {
             .unwrap_or(0);
         let cuti: i64 = r.query_one(
         "SELECT COUNT(*) FROM attendance_results WHERE work_date=?1 AND status IN ('Leave','Permission')", &[&d], |x| x.get(0))?.unwrap_or(0);
-        let tidak_hadir = (active_emp - hadir - cuti).max(0);
+        // Hari libur / libur mingguan bukan kemangkiran.
+        let libur: i64 = r.query_one(
+        "SELECT COUNT(*) FROM attendance_results WHERE work_date=?1 AND status IN ('Holiday','DayOff')", &[&d], |x| x.get(0))?.unwrap_or(0);
+        let tidak_hadir = (active_emp - hadir - cuti - libur).max(0);
         let dev_total = q("SELECT COUNT(*) FROM devices WHERE is_active=1");
         let dev_online = q("SELECT COUNT(*) FROM devices WHERE is_active=1 AND status='online'");
         let dev_offline = q("SELECT COUNT(*) FROM devices WHERE is_active=1 AND status='offline'");
         let dev_error = q("SELECT COUNT(*) FROM devices WHERE is_active=1 AND status='error'");
         let daily: Vec<serde_json::Value> = r.query_rows(
-        "SELECT work_date, SUM(CASE WHEN status IN ('Present','Late') THEN 1 ELSE 0 END) hadir,
-                SUM(CASE WHEN status='Late' THEN 1 ELSE 0 END) terlambat,
+        "SELECT work_date, COALESCE(SUM(CASE WHEN status IN ('Present','Late') THEN 1 ELSE 0 END),0) hadir,
+                COALESCE(SUM(CASE WHEN status='Late' THEN 1 ELSE 0 END),0) terlambat,
                 COUNT(*) total FROM attendance_results WHERE work_date >= date(?1,'-6 days') GROUP BY work_date ORDER BY work_date",
         &[&d],
         |row| Ok(serde_json::json!({"date": row.get::<_, String>(0)?, "hadir": row.get::<_, i64>(1)?, "terlambat": row.get::<_, i64>(2)?, "total": row.get::<_, i64>(3)?})),
@@ -503,10 +506,6 @@ pub mod commands {
             &["id", "holiday_date", "name", "kind", "created_at"],
         ),
         (
-            "leave_types",
-            &["id", "code", "name", "quota_days", "created_at"],
-        ),
-        (
             "attendance_policy",
             &[
                 "id",
@@ -649,25 +648,7 @@ pub mod commands {
         }
         let id = uid();
         let ts = now();
-        let mut keys: Vec<String> = vec!["id".into()];
-        let mut vals: Vec<String> = vec![id.clone()];
-        for c in cols.iter().filter(|c| **c != "id") {
-            if let Some(v) = data.get(*c) {
-                let sv = match v {
-                    serde_json::Value::String(x) => x.clone(),
-                    x => x.to_string().trim_matches('"').to_string(),
-                };
-                keys.push(c.to_string());
-                vals.push(sv);
-            } else if matches!(
-                table.as_str(),
-                "employees" | "shifts" | "devices" | "branches" | "departments" | "positions"
-            ) && (*c == "created_at" || *c == "updated_at")
-            {
-                keys.push(c.to_string());
-                vals.push(ts.clone());
-            }
-        }
+        let (keys, vals) = insert_parts(cols, &table, &data, &id, &ts);
         validate_required(&table, &data)?;
         let placeholders: Vec<String> = (1..=keys.len()).map(|i| format!("?{i}")).collect();
         let sql = format!(
@@ -682,22 +663,151 @@ pub mod commands {
         Ok(serde_json::json!({"id": id}))
     }
 
-    fn validate_required(table: &str, data: &serde_json::Value) -> AppResult<()> {
-        let need: &[&str] = match table {
+    fn required_columns(table: &str) -> &'static [&'static str] {
+        match table {
             "employees" => &["nik", "name", "hire_date"],
             "devices" => &["name", "vendor", "adapter_name"],
             "shifts" => &["code", "name", "start_time", "end_time"],
             "branches" => &["code", "name"],
             _ => &[],
+        }
+    }
+
+    /// Susun kolom INSERT yang aman: null dilewati, string kosong pada kolom
+    /// non-wajib dilewati (jadi NULL/default, bukan sampah ''), stempel waktu
+    /// otomatis untuk semua tabel yang memilikinya.
+    fn insert_parts(
+        cols: &[&str],
+        table: &str,
+        data: &serde_json::Value,
+        id: &str,
+        ts: &str,
+    ) -> (Vec<String>, Vec<String>) {
+        let mut keys: Vec<String> = vec!["id".into()];
+        let mut vals: Vec<String> = vec![id.to_string()];
+        for c in cols.iter().filter(|c| **c != "id") {
+            if let Some(v) = data.get(*c) {
+                if v.is_null() {
+                    continue;
+                }
+                let sv = match v {
+                    serde_json::Value::String(x) => x.clone(),
+                    x => x.to_string().trim_matches('"').to_string(),
+                };
+                if sv.is_empty() && !required_columns(table).contains(c) {
+                    continue;
+                }
+                keys.push(c.to_string());
+                vals.push(sv);
+            } else if *c == "created_at" || *c == "updated_at" {
+                keys.push(c.to_string());
+                vals.push(ts.to_string());
+            }
+        }
+        (keys, vals)
+    }
+
+    /// Susun SET UPDATE yang aman + validasi role + hash password.
+    /// Mengembalikan (sets, vals). Aturan: null → SET NULL, '' → pertahankan
+    /// nilai lama, password kosong → abaikan, password isi → hash Argon2.
+    fn update_parts(
+        table: &str,
+        data: &serde_json::Value,
+    ) -> AppResult<(Vec<String>, Vec<String>)> {
+        let cols = columns_of(table)?;
+        let mut sets: Vec<String> = vec![];
+        let mut vals: Vec<String> = vec![];
+        for (k, v) in data.as_object().cloned().unwrap_or_default() {
+            if k == "id" {
+                continue;
+            }
+            if k == "password_hash" {
+                continue;
+            }
+            // "password" virtual (tak ada di kolom) → hash ke password_hash.
+            if k == "password" {
+                let plain = match v {
+                    serde_json::Value::String(x) => x,
+                    x => x.to_string(),
+                };
+                if plain.trim().is_empty() {
+                    continue;
+                }
+                vals.push(auth::hash_password(&plain)?);
+                sets.push("password_hash=?".to_string());
+                continue;
+            }
+            if !cols.contains(&k.as_str()) {
+                continue;
+            }
+            if v.is_null() {
+                sets.push(format!("{k}=NULL"));
+                continue;
+            }
+            if table == "users" && k == "role" {
+                let rv = match &v {
+                    serde_json::Value::String(x) => x.clone(),
+                    x => x.to_string(),
+                };
+                if Role::from_code(rv.trim()).is_none() {
+                    return Err(AppError::Validation("role tidak dikenal".into()));
+                }
+            }
+            if let serde_json::Value::String(x) = &v {
+                if x.is_empty() {
+                    continue;
+                }
+            }
+            sets.push(format!("{k}=?"));
+            vals.push(match v {
+                serde_json::Value::String(x) => x,
+                x => x.to_string(),
+            });
+        }
+        Ok((sets, vals))
+    }
+
+    /// Guard hapus pengguna: super_admin saja, bukan diri sendiri,
+    /// bukan super_admin terakhir.
+    fn guard_user_delete(repo: &Repo, requester: &str, target_id: &str) -> AppResult<()> {
+        let target: Option<(String, String)> = repo.query_one(
+            "SELECT username, role FROM users WHERE id=?1",
+            &[&target_id.to_string()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        let Some((uname, urole)) = target else {
+            return Err(AppError::NotFound("pengguna".into()));
         };
-        for n in need {
-            if data
+        if uname == requester {
+            return Err(AppError::Forbidden(
+                "tidak bisa menghapus akun sendiri".into(),
+            ));
+        }
+        if urole == "super_admin" {
+            let supers: i64 = repo
+                .query_one(
+                    "SELECT COUNT(*) FROM users WHERE role='super_admin'",
+                    &[],
+                    |r| r.get(0),
+                )?
+                .unwrap_or(0);
+            if supers <= 1 {
+                return Err(AppError::Forbidden(
+                    "tidak bisa menghapus super_admin terakhir".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_required(table: &str, data: &serde_json::Value) -> AppResult<()> {
+        for n in required_columns(table) {
+            let empty = data
                 .get(*n)
                 .and_then(|v| v.as_str())
                 .map(|x| x.trim().is_empty())
-                .unwrap_or(true)
-                && data.get(*n).map(|v| v.is_null()).unwrap_or(true)
-            {
+                .unwrap_or(true);
+            if empty {
                 return Err(AppError::Validation(format!("kolom {n} wajib diisi")));
             }
         }
@@ -705,6 +815,23 @@ pub mod commands {
             if let Some(em) = data.get("email").and_then(|v| v.as_str()) {
                 if !em.is_empty() && !em.contains('@') {
                     return Err(AppError::Validation("email tidak valid".into()));
+                }
+            }
+        }
+        if table == "shifts" {
+            validate_shift_times(data)?;
+        }
+        Ok(())
+    }
+
+    /// Jam tak valid (mis. 25:00) akan panic di mesin hitung — tolak saat tulis.
+    fn validate_shift_times(data: &serde_json::Value) -> AppResult<()> {
+        for k in ["start_time", "end_time"] {
+            if let Some(v) = data.get(k).and_then(|x| x.as_str()) {
+                if !v.is_empty() && !attendance::valid_hm(v) {
+                    return Err(AppError::Validation(format!(
+                        "{k} harus HH:MM (00:00–23:59)"
+                    )));
                 }
             }
         }
@@ -780,44 +907,10 @@ pub mod commands {
                 "hanya super_admin yang boleh kelola pengguna".into(),
             ));
         }
-        let mut sets: Vec<String> = vec![];
-        let mut vals: Vec<String> = vec![];
-        for (k, v) in data.as_object().cloned().unwrap_or_default() {
-            if k == "id" || !cols.contains(&k.as_str()) {
-                continue;
-            }
-            if k == "password_hash" {
-                continue;
-            }
-            if k == "password" {
-                // Password baru: kosong = tidak diubah; isi = hash Argon2.
-                let plain = match v {
-                    serde_json::Value::String(x) => x,
-                    x => x.to_string(),
-                };
-                if plain.trim().is_empty() {
-                    continue;
-                }
-                let hash = auth::hash_password(&plain)?;
-                sets.push("password_hash=?".to_string());
-                vals.push(hash);
-                continue;
-            }
-            if table == "users" && k == "role" {
-                let rv = match &v {
-                    serde_json::Value::String(x) => x.clone(),
-                    x => x.to_string(),
-                };
-                if Role::from_code(rv.trim()).is_none() {
-                    return Err(AppError::Validation("role tidak dikenal".into()));
-                }
-            }
-            sets.push(format!("{k}=?"));
-            vals.push(match v {
-                serde_json::Value::String(x) => x,
-                x => x.to_string(),
-            });
+        if table == "shifts" {
+            validate_shift_times(&data)?;
         }
+        let (mut sets, mut vals) = update_parts(&table, &data)?;
         if sets.is_empty() {
             return Err(AppError::Validation("tidak ada kolom yang diubah".into()));
         }
@@ -913,6 +1006,23 @@ pub mod commands {
     ) -> Result<String, AppError> {
         let s = require(&state, &token, "attendance.view")?;
         check_table_perm(&s, &table, true)?;
+        if table == "users" {
+            if s.role != Role::SuperAdmin {
+                return Err(AppError::Forbidden(
+                    "hanya super_admin yang boleh kelola pengguna".into(),
+                ));
+            }
+            // Lindungi diri sendiri & super_admin terakhir.
+            guard_user_delete(&state.repo, &s.username, &id)?;
+        }
+        if table == "audit_log" {
+            return Err(AppError::Forbidden("audit log tidak boleh dihapus".into()));
+        }
+        if table == "app_settings" {
+            return Err(AppError::Validation(
+                "pengaturan diubah via menu Pengaturan, bukan dihapus".into(),
+            ));
+        }
         if table == "employees" && !hard {
             state.repo.exec(
                 "UPDATE employees SET deleted_at=?1, status='nonaktif' WHERE id=?2",
@@ -963,12 +1073,16 @@ pub mod commands {
             a.initialize().map_err(|e| e.to_string())?;
             a.connect(host_s, std::time::Duration::from_secs(8))
                 .map_err(|e| e.to_string())?;
-            let st = a.health_check().map_err(|e| e.to_string())?;
-            let info = a.fetch_device_info().map_err(|e| e.to_string())?;
+            let out = (|| -> Result<serde_json::Value, String> {
+                let st = a.health_check().map_err(|e| e.to_string())?;
+                let info = a.fetch_device_info().map_err(|e| e.to_string())?;
+                Ok(
+                    serde_json::json!({"status": format!("{st:?}"), "info": info, "sdk": a.get_sdk_version(), "ms": t0.elapsed().as_millis()}),
+                )
+            })();
+            // Selalu disconnect (sesi login perangkat tak boleh bocor saat error).
             let _ = a.disconnect();
-            Ok(
-                serde_json::json!({"status": format!("{st:?}"), "info": info, "sdk": a.get_sdk_version(), "ms": t0.elapsed().as_millis()}),
-            )
+            out
         })();
         let now_s = now();
         match res {
@@ -1061,7 +1175,12 @@ pub mod commands {
         work_date: String,
         employee_id: Option<String>,
     ) -> Result<serde_json::Value, AppError> {
-        let _s = require(&state, &token, "attendance.view")?;
+        // Menulis hasil + menandai event: butuh hak tulis (HR/operator/admin).
+        let _s = require(&state, &token, "attendance.manage")
+            .or_else(|_| require(&state, &token, "correction.*"))
+            .or_else(|_| require(&state, &token, "shift.manage"))
+            .or_else(|_| require(&state, &token, "sync.*"))
+            .or_else(|_| require(&state, &token, "device.manage"))?;
         // Tentukan daftar karyawan.
         let emps: Vec<(String,)> = if let Some(e) = employee_id {
             vec![(e,)]
@@ -1089,6 +1208,8 @@ pub mod commands {
             )?
             .unwrap_or(false);
         let mut done = 0i64;
+        let mut skipped_no_schedule = 0i64;
+        let mut skipped_invalid = 0i64;
         for (eid,) in emps {
             // assignment efektif terbaru
             let shift_id: Option<(String,)> = state.repo.query_one(
@@ -1106,23 +1227,38 @@ pub mod commands {
                         |r| r.get(0),
                     )?;
                     let code = pat.unwrap_or("PAGI".into());
-                    state
-                        .repo
-                        .query_one("SELECT id FROM shifts WHERE code=?1", &[&code], |r| {
-                            r.get(0)
-                        })?
-                        .unwrap_or("sh-pagi".into())
+                    match state.repo.query_one(
+                        "SELECT id FROM shifts WHERE code=?1",
+                        &[&code],
+                        |r| r.get(0),
+                    )? {
+                        Some(id) => id,
+                        None => {
+                            // Tanpa jadwal yang bisa dipakai: lewati, jangan karang hasil.
+                            log::warn!("hitung {work_date}: {eid} tanpa shift, dilewati");
+                            skipped_no_schedule += 1;
+                            continue;
+                        }
+                    }
                 }
             };
-            let shift = load_shift(&state.repo, &shift_id)?;
+            let shift = match load_shift(&state.repo, &shift_id) {
+                Ok(sh) => sh,
+                Err(e) => {
+                    log::warn!(
+                        "hitung {work_date}: shift {shift_id} rusak ({e}), karyawan {eid} dilewati"
+                    );
+                    skipped_no_schedule += 1;
+                    continue;
+                }
+            };
             // kumpulkan event karyawan (via mapping + event langsung bila device_user cocok nik? hanya via mapping)
             let maps: Vec<String> = state.repo.query_rows(
                 "SELECT device_user_id FROM employee_device_map WHERE employee_id=?1",
                 &[&eid],
                 |r| r.get(0),
             )?;
-            let mut ev_times: Vec<chrono::NaiveDateTime> = vec![];
-            let mut used_ids: Vec<String> = vec![];
+            let mut ev_all: Vec<(String, chrono::NaiveDateTime)> = vec![];
             for du in &maps {
                 let rows: Vec<(String, String)> = state.repo.query_rows(
                 "SELECT id, event_time FROM raw_events WHERE device_user_id=?1 AND event_time >= ?2 AND event_time <= ?3 ORDER BY event_time",
@@ -1130,16 +1266,38 @@ pub mod commands {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )?;
                 for (rid, t) in rows {
-                    if let Some(dt) = timex::parse_wib(&t) {
-                        ev_times.push(dt);
-                        used_ids.push(rid);
+                    match timex::parse_wib(&t) {
+                        Some(dt) => ev_all.push((rid, dt)),
+                        None => {
+                            // Waktu korup: jangan tandai processed, hitung sebagai dilewati.
+                            log::warn!("event {rid} waktu korup: {t}");
+                            skipped_invalid += 1;
+                        }
                     }
                 }
             }
+            let ev_times: Vec<chrono::NaiveDateTime> = ev_all.iter().map(|(_, dt)| *dt).collect();
             let grouped = attendance::group_events_for_shift(&shift, &wd, ev_times);
-            let on_leave: bool = state.repo.query_one(
-            "SELECT COUNT(*) FROM leave_requests WHERE employee_id=?1 AND status='approved' AND start_date<=?2 AND end_date>=?2",
-            &[&eid, &work_date], |r| { let n: i64 = r.get(0)?; Ok(n > 0) })?.unwrap_or(false);
+            // Hanya event di dalam window shift yang ditandai processed;
+            // sisanya tetap untuk tanggal/shift lain.
+            let (earliest, latest_out) = shift.accept_bounds(&wd);
+            let used_ids: Vec<String> = ev_all
+                .into_iter()
+                .filter(|(_, dt)| *dt >= earliest && *dt <= latest_out)
+                .map(|(rid, _)| rid)
+                .collect();
+            let on_leave_set: Vec<String> = state.repo.query_rows(
+            "SELECT lt.code FROM leave_requests lr JOIN leave_types lt ON lt.id=lr.leave_type_id WHERE lr.employee_id=?1 AND lr.status='approved' AND lr.start_date<=?2 AND lr.end_date>=?2",
+            &[&eid, &work_date], |r| r.get(0))?;
+            let on_leave = on_leave_set.iter().any(|c| c != "IZIN");
+            let on_permission = on_leave_set.iter().any(|c| c == "IZIN");
+            let cal_kind: Option<String> = state.repo.query_one(
+                "SELECT kind FROM work_calendar WHERE work_date=?1",
+                &[&work_date],
+                |r| r.get(0),
+            )?;
+            let is_day_off = matches!(cal_kind.as_deref(), Some(k) if k != "kerja")
+                || !shift.applies_to_weekday(&wd);
             let ot_appr: i64 = state.repo.query_one(
             "SELECT COALESCE(SUM(minutes_requested),0) FROM overtime_requests WHERE employee_id=?1 AND work_date=?2 AND status='approved'",
             &[&eid, &work_date], |r| r.get(0))?.unwrap_or(0);
@@ -1148,9 +1306,9 @@ pub mod commands {
                 shift: shift.clone(),
                 events: grouped,
                 is_holiday,
-                is_day_off: false,
+                is_day_off,
                 on_leave,
-                on_permission: false,
+                on_permission,
                 rounding_minutes: policy.0,
                 overtime_approved_minutes: ot_appr,
                 require_overtime_approval: policy.1 != 0,
@@ -1180,7 +1338,12 @@ pub mod commands {
             done += 1;
         }
         log::info!("hitung absensi {work_date}: {done} karyawan");
-        Ok(serde_json::json!({"computed": done, "date": work_date}))
+        Ok(serde_json::json!({
+            "computed": done,
+            "date": work_date,
+            "skipped_no_schedule": skipped_no_schedule,
+            "skipped_invalid_time": skipped_invalid,
+        }))
     }
 
     #[tauri::command]
@@ -1192,7 +1355,7 @@ pub mod commands {
         let rows: Vec<serde_json::Value> = state.repo.query_rows(
         "SELECT a.id, e.name, a.work_date, a.status, a.anomaly, a.clock_in, a.clock_out FROM attendance_results a JOIN employees e ON e.id=a.employee_id WHERE a.status IN ('Incomplete','NeedsReview','Absent') ORDER BY a.work_date DESC LIMIT 100",
         &[],
-        |r| Ok(serde_json::json!({"id": r.get::<_, String>(0)?, "name": r.get::<_, String>(1)?, "date": r.get::<_, String>(2)?, "status": r.get::<_, String>(3)?, "anomaly": r.get::<_, String>(4)?, "in": r.get::<_, String>(5)?, "out": r.get::<_, String>(6)?})),
+        |r| Ok(serde_json::json!({"id": r.get::<_, String>(0)?, "name": r.get::<_, String>(1)?, "date": r.get::<_, String>(2)?, "status": r.get::<_, String>(3)?, "anomaly": r.get::<_, String>(4)?, "in": r.get::<_, Option<String>>(5)?.unwrap_or_default(), "out": r.get::<_, Option<String>>(6)?.unwrap_or_default()})),
     )?;
         let unmapped: Vec<serde_json::Value> = state.repo.query_rows(
         "SELECT id, device_id, device_user_id, event_time FROM raw_events WHERE status='pending' AND device_user_id NOT IN (SELECT device_user_id FROM employee_device_map) ORDER BY event_time DESC LIMIT 100",
@@ -1220,12 +1383,45 @@ pub mod commands {
         if !allowed.contains(&field.as_str()) {
             return Err(AppError::Validation("kolom tidak boleh dikoreksi".into()));
         }
+        // Validasi nilai baru sesuai kolom (jangan tulis sampah ke hasil).
+        match field.as_str() {
+            "clock_in" | "clock_out" => {
+                if !new_value.trim().is_empty() && timex::parse_wib(&new_value).is_none() {
+                    return Err(AppError::Validation(
+                        "format jam harus YYYY-MM-DD HH:MM:SS (atau kosongkan)".into(),
+                    ));
+                }
+            }
+            "status" => {
+                const KNOWN: &[&str] = &[
+                    "Present",
+                    "Late",
+                    "Absent",
+                    "Leave",
+                    "Permission",
+                    "Holiday",
+                    "DayOff",
+                    "Incomplete",
+                    "NeedsReview",
+                ];
+                if !KNOWN.contains(&new_value.trim()) {
+                    return Err(AppError::Validation("status tidak dikenal".into()));
+                }
+            }
+            _ => {}
+        }
+        let exists: Option<String> = state.repo.query_one(
+            "SELECT id FROM attendance_results WHERE id=?1",
+            &[&attendance_id],
+            |r| r.get(0),
+        )?;
         let old: Option<String> = state.repo.query_one(
             &format!("SELECT {field} FROM attendance_results WHERE id=?1"),
             &[&attendance_id],
             |r| r.get(0),
         )?;
-        let old = old.ok_or_else(|| AppError::NotFound("absensi".into()))?;
+        let _ = exists.ok_or_else(|| AppError::NotFound("absensi".into()))?;
+        let old = old.unwrap_or_default();
         let sql = format!("UPDATE attendance_results SET {field}=?1, computed_at=?2 WHERE id=?3");
         let ts = now();
         state.repo.exec(&sql, &[&new_value, &ts, &attendance_id])?;
@@ -1426,6 +1622,15 @@ pub mod commands {
         )
     }
 
+    /// end_date kosong/NULL → batas atas tak berhingga untuk perbandingan string.
+    fn new_end_or_max(end: &str) -> String {
+        if end.trim().is_empty() {
+            "9999-12-31".to_string()
+        } else {
+            end.to_string()
+        }
+    }
+
     /// Terapkan keputusan tukar shift: ubah status + (bila disetujui) buat
     /// penugasan satu hari pada tanggal swap. Histori lama tetap utuh.
     fn apply_swap_decision(
@@ -1474,7 +1679,9 @@ pub mod commands {
         token: String,
         start_date: String,
     ) -> Result<serde_json::Value, AppError> {
-        require(&state, &token, "attendance.view")?;
+        require(&state, &token, "shift.view")
+            .or_else(|_| require(&state, &token, "shift.manage"))
+            .or_else(|_| require(&state, &token, "attendance.view"))?;
         let start = parse_date(&start_date)?;
         let days: Vec<String> = (0..7)
             .map(|i| {
@@ -1555,17 +1762,32 @@ pub mod commands {
         let mut created = 0i64;
         let mut skipped = vec![];
         for eid in &employee_ids {
-            // Bentrok: sudah ada penugasan shift LAIN yang tumpang tindih rentang.
+            // Karyawan harus ada (anti FK error di tengah jalan).
+            let emp_ok: i64 = state
+                .repo
+                .query_one("SELECT COUNT(*) FROM employees WHERE id=?1", &[eid], |r| {
+                    r.get(0)
+                })?
+                .unwrap_or(0);
+            if emp_ok == 0 {
+                skipped.push(serde_json::json!({
+                    "employee_id": eid,
+                    "reason": "karyawan tidak ditemukan",
+                }));
+                continue;
+            }
+            // Bentrok: penugasan APAPUN (termasuk shift sama) yang tumpang tindih
+            // rentang — duplikat range shift sama juga ditolak agar jadwal tegas.
             let clash: Vec<(String, String, String)> = state.repo.query_rows(
                 "SELECT s.code, a.effective_date, COALESCE(a.end_date,'') FROM shift_assignments a JOIN shifts s ON s.id=a.shift_id
-                 WHERE a.employee_id=?1 AND a.shift_id<>?2 AND a.effective_date<=?3 AND (a.end_date IS NULL OR a.end_date>=?4)",
-                &[&eid.clone(), &shift_id, &end_date, &start_date],
+                 WHERE a.employee_id=?1 AND a.effective_date<=?2 AND (a.end_date IS NULL OR a.end_date>=?3)",
+                &[&eid.clone(), &end_date, &start_date],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )?;
             if !clash.is_empty() {
                 skipped.push(serde_json::json!({
                     "employee_id": eid,
-                    "reason": format!("bentrok dengan shift {} ({} s/d {})", clash[0].0, clash[0].1, if clash[0].2.is_empty() { "…" } else { &clash[0].2 }),
+                    "reason": format!("bentrok/sudah ada penugasan {} ({} s/d {})", clash[0].0, clash[0].1, if clash[0].2.is_empty() { "…" } else { &clash[0].2 }),
                 }));
                 continue;
             }
@@ -1602,19 +1824,21 @@ pub mod commands {
         let s = require(&state, &token, "shift.manage")?;
         let src = parse_date(&src_start)?;
         let dst = parse_date(&dst_start)?;
-        if dst <= src {
+        if dst == src {
             return Err(AppError::Validation(
-                "minggu tujuan harus setelah minggu sumber".into(),
+                "minggu tujuan sama dengan minggu sumber".into(),
             ));
         }
         let delta = (dst - src).num_days();
         let src_end = (src + chrono::Duration::days(6))
             .format("%Y-%m-%d")
             .to_string();
+        // Hanya baris yang MULAI pada minggu sumber; penugasan panjang yang
+        // sudah mencakup minggu tujuan tak perlu disalin.
         let rows: Vec<(String, String, String, Option<String>)> = state.repo.query_rows(
             "SELECT employee_id, shift_id, effective_date, end_date FROM shift_assignments
-             WHERE effective_date<=?1 AND (end_date IS NULL OR end_date>=?2)",
-            &[&src_end, &src_start],
+             WHERE effective_date>=?1 AND effective_date<=?2",
+            &[&src_start, &src_end],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )?;
         let mut copied = 0i64;
@@ -1625,23 +1849,24 @@ pub mod commands {
                 .format("%Y-%m-%d")
                 .to_string();
             let new_end = match end {
-                Some(e) => {
+                Some(e) if !e.trim().is_empty() => {
                     let e_d = parse_date(&e)?;
                     (e_d + chrono::Duration::days(delta))
                         .format("%Y-%m-%d")
                         .to_string()
                 }
-                None => String::new(),
+                _ => String::new(),
             };
-            let dup: i64 = state
+            // Lewati bila sudah ada penugasan APAPUN yang tumpang tindih.
+            let clash: i64 = state
                 .repo
                 .query_one(
-                    "SELECT COUNT(*) FROM shift_assignments WHERE employee_id=?1 AND shift_id=?2 AND effective_date=?3",
-                    &[&eid, &sid, &new_eff],
+                    "SELECT COUNT(*) FROM shift_assignments WHERE employee_id=?1 AND effective_date<=?2 AND (end_date IS NULL OR end_date>=?3)",
+                    &[&eid, &new_end_or_max(&new_end), &new_eff],
                     |r| r.get(0),
                 )?
                 .unwrap_or(0);
-            if dup > 0 {
+            if clash > 0 {
                 skipped += 1;
                 continue;
             }
@@ -1688,7 +1913,9 @@ pub mod commands {
         start_date: String,
         end_date: String,
     ) -> Result<serde_json::Value, AppError> {
-        require(&state, &token, "attendance.view")?;
+        require(&state, &token, "shift.view")
+            .or_else(|_| require(&state, &token, "shift.manage"))
+            .or_else(|_| require(&state, &token, "attendance.view"))?;
         let start = parse_date(&start_date)?;
         let end = parse_date(&end_date)?;
         if end < start {
@@ -1792,6 +2019,14 @@ pub mod commands {
     }
 
     // ---------- sinkronisasi massal + scheduler ----------
+    /// Kunci global anti-tumpang-tindih: sync manual & scheduler tak boleh
+    /// jalan bersamaan (checkpoint ganda / double-sync).
+    fn sync_lock() -> &'static std::sync::Mutex<()> {
+        use std::sync::OnceLock;
+        static LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| std::sync::Mutex::new(()))
+    }
+
     fn sync_one(repo: &Repo, device_id: &str) -> Result<sync::service::SyncStats, AppError> {
         let (adapter_name, config_json): (String, String) = repo
             .query_one(
@@ -1811,6 +2046,11 @@ pub mod commands {
         token: String,
     ) -> Result<serde_json::Value, AppError> {
         require(&state, &token, "sync.*").or_else(|_| require(&state, &token, "device.manage"))?;
+        let Ok(_guard) = sync_lock().try_lock() else {
+            return Err(AppError::Conflict(
+                "sinkronisasi sedang berjalan, coba lagi".into(),
+            ));
+        };
         let ids: Vec<String> =
             state
                 .repo
@@ -1906,11 +2146,16 @@ pub mod commands {
                             r.get(0)
                         })
                         .unwrap_or_default();
-                    for id in ids {
-                        if !flag.load(std::sync::atomic::Ordering::Relaxed) {
-                            break;
+                    // Lewati putaran bila sync manual sedang berjalan.
+                    if let Ok(_guard) = sync_lock().try_lock() {
+                        for id in ids {
+                            if !flag.load(std::sync::atomic::Ordering::Relaxed) {
+                                break;
+                            }
+                            let _ = sync_one(&app.state::<AppState>().repo, &id);
                         }
-                        let _ = sync_one(&app.state::<AppState>().repo, &id);
+                    } else {
+                        log::info!("scheduler: putaran dilewati (sync manual berjalan)");
                     }
                     // Backup otomatis harian bila diaktifkan (sekali per tanggal WIB).
                     let st = app.state::<AppState>();
@@ -1975,7 +2220,8 @@ pub mod commands {
         _token: String,
         csv_text: String,
     ) -> Result<serde_json::Value, AppError> {
-        let _s = require(&_state, &_token, "attendance.view")?;
+        let _s = require(&_state, &_token, "employee.manage")
+            .or_else(|_| require(&_state, &_token, "employee.view"))?;
         let mut rdr = csv::Reader::from_reader(csv_text.as_bytes());
         let headers: Vec<String> = rdr
             .headers()
@@ -1983,7 +2229,12 @@ pub mod commands {
             .unwrap_or_default();
         let mut rows: Vec<serde_json::Value> = vec![];
         let mut errors: Vec<String> = vec![];
-        for (i, rec) in rdr.records().enumerate().take(200) {
+        let mut total = 0usize;
+        for (i, rec) in rdr.records().enumerate() {
+            total += 1;
+            if i >= 200 {
+                continue;
+            }
             match rec {
                 Ok(r) => {
                     let m: std::collections::HashMap<String, String> = headers
@@ -1998,6 +2249,16 @@ pub mod commands {
                     if m.get("name").map(|s| s.trim().is_empty()).unwrap_or(true) {
                         errs.push("nama kosong");
                     }
+                    if let Some(hd) = m.get("hire_date") {
+                        if !hd.trim().is_empty() && parse_date(hd.trim()).is_err() {
+                            errs.push("hire_date harus YYYY-MM-DD");
+                        }
+                    }
+                    if let Some(em) = m.get("email") {
+                        if !em.trim().is_empty() && !em.contains('@') {
+                            errs.push("email tidak valid");
+                        }
+                    }
                     rows.push(serde_json::json!({"line": i + 2, "data": m, "errors": errs}));
                     if !errs.is_empty() {
                         errors.push(format!("baris {}: {}", i + 2, errs.join(", ")));
@@ -2005,6 +2266,11 @@ pub mod commands {
                 }
                 Err(e) => errors.push(format!("baris {}: {e}", i + 2)),
             }
+        }
+        if total > 200 {
+            errors.push(format!(
+                "hanya 200 baris pertama diproses dari {total} baris (bagi file bila lebih)"
+            ));
         }
         Ok(serde_json::json!({"headers": headers, "rows": rows, "errors": errors}))
     }
@@ -2019,29 +2285,65 @@ pub mod commands {
         let mut ok = 0i64;
         let mut fail = 0i64;
         let mut messages: Vec<String> = vec![];
+        let mut seen_nik = std::collections::HashSet::new();
         for (i, r) in rows.iter().enumerate() {
+            let no = i + 1;
             let nik = r.get("nik").and_then(|v| v.as_str()).unwrap_or("").trim();
             let name = r.get("name").and_then(|v| v.as_str()).unwrap_or("").trim();
             if nik.is_empty() || name.is_empty() {
                 fail += 1;
-                messages.push(format!("baris {i}: nik/nama wajib"));
+                messages.push(format!("baris {no}: nik/nama wajib"));
                 continue;
             }
-            let id = uid();
-            let ts = now();
-            let hire = r
+            if !seen_nik.insert(nik.to_string()) {
+                fail += 1;
+                messages.push(format!("baris {no} ({nik}): NIK duplikat di file"));
+                continue;
+            }
+            let dup_db: i64 = state
+                .repo
+                .query_one(
+                    "SELECT COUNT(*) FROM employees WHERE nik=?1",
+                    &[&nik.to_string()],
+                    |x| x.get(0),
+                )?
+                .unwrap_or(0);
+            if dup_db > 0 {
+                fail += 1;
+                messages.push(format!("baris {no} ({nik}): NIK sudah ada di database"));
+                continue;
+            }
+            let email = r.get("email").and_then(|v| v.as_str()).unwrap_or("").trim();
+            if !email.is_empty() && !email.contains('@') {
+                fail += 1;
+                messages.push(format!("baris {no} ({nik}): email tidak valid"));
+                continue;
+            }
+            let hire_raw = r
                 .get("hire_date")
                 .and_then(|v| v.as_str())
-                .unwrap_or("2026-01-01");
+                .unwrap_or("")
+                .trim();
+            let hire = if hire_raw.is_empty() {
+                timex::today_wib().format("%Y-%m-%d").to_string()
+            } else if parse_date(hire_raw).is_ok() {
+                hire_raw.to_string()
+            } else {
+                fail += 1;
+                messages.push(format!("baris {no} ({nik}): hire_date harus YYYY-MM-DD"));
+                continue;
+            };
+            let id = uid();
+            let ts = now();
             match state.repo.exec(
             "INSERT INTO employees (id, nik, name, email, phone, hire_date, status, created_at, updated_at) VALUES (?1,?2,?3,?4,?5,?6,'aktif',?7,?7)",
             &[&id, &nik.to_string(), &name.to_string(),
-              &r.get("email").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-              &r.get("phone").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-              &hire.to_string(), &ts],
+              &email.to_string(),
+              &r.get("phone").and_then(|v| v.as_str()).unwrap_or("").trim().to_string(),
+              &hire, &ts],
         ) {
             Ok(_) => ok += 1,
-            Err(e) => { fail += 1; messages.push(format!("baris {i} ({nik}): {e}")); }
+            Err(e) => { fail += 1; messages.push(format!("baris {no} ({nik}): {e}")); }
         }
         }
         state.repo.insert_audit(
@@ -2084,6 +2386,24 @@ pub mod commands {
                 "file terlalu besar (maks {} MB)",
                 max_bytes / 1024 / 1024
             )));
+        }
+        // Verifikasi magic bytes agar ekstensi tak bisa memalsukan tipe file.
+        let mut head = [0u8; 5];
+        {
+            use std::io::Read;
+            let mut fh = std::fs::File::open(src)?;
+            let n = fh.read(&mut head).unwrap_or(0);
+            let ok = match ext.as_str() {
+                "png" => n >= 4 && head[0..4] == [0x89, b'P', b'N', b'G'],
+                "jpg" | "jpeg" => n >= 2 && head[0..2] == [0xFF, 0xD8],
+                "pdf" => n >= 4 && head[0..4] == *b"%PDF",
+                _ => false,
+            };
+            if !ok {
+                return Err(AppError::Validation(
+                    "isi file tidak sesuai ekstensinya".into(),
+                ));
+            }
         }
         let dir = state
             .db_path
@@ -2134,13 +2454,17 @@ pub mod commands {
             2 * 1024 * 1024,
         )?;
         state.repo.exec(
-            "UPDATE employees SET photo_path=?1, updated_at=datetime('now','localtime') WHERE id=?2",
-            &[&dest, &employee_id],
+            "UPDATE employees SET photo_path=?1, updated_at=?2 WHERE id=?3",
+            &[&dest, &now(), &employee_id],
         )?;
         state
             .repo
             .insert_audit(&s.username, "save_photo", "employees", &employee_id, &dest)?;
-        Ok(serde_json::json!({"path": dest}))
+        let file_name = std::path::Path::new(&dest)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        Ok(serde_json::json!({"path": file_name}))
     }
 
     #[tauri::command]
@@ -2399,6 +2723,8 @@ pub mod commands {
             .trim()
             .parse()
             .unwrap_or(10);
+        // Checkpoint dulu agar file backup konsisten (WAL menyatu ke DB).
+        state.repo.checkpoint_wal()?;
         let dest = backup::backup_db(&state.db_path, &dir, keep.clamp(1, 100))?;
         log::info!("backup manual: {}", dest.display());
         state.repo.insert_audit(
@@ -2419,12 +2745,34 @@ pub mod commands {
     ) -> Result<String, AppError> {
         let s = require(&state, &token, "backup.*")
             .or_else(|_| require(&state, &token, "user.manage"))?;
-        backup::restore_db(&state.db_path, std::path::Path::new(&file))?;
-        log::info!("restore dari {file}");
-        state
-            .repo
-            .insert_audit(&s.username, "restore", "db", "-", &file)?;
-        Ok("ok — restart aplikasi untuk memuat database".into())
+        // Hanya file di dalam folder backups resmi (anti path traversal).
+        let dir = state
+            .db_path
+            .parent()
+            .map(|p| p.join("backups"))
+            .unwrap_or("backups".into());
+        let want = std::fs::canonicalize(&dir)
+            .map_err(|_| AppError::Validation("folder backup tidak ada".into()))?;
+        let got = std::fs::canonicalize(&file)
+            .map_err(|_| AppError::Validation("file backup tidak ditemukan".into()))?;
+        if !got.starts_with(&want) {
+            return Err(AppError::Validation(
+                "file backup harus di dalam folder backups aplikasi".into(),
+            ));
+        }
+        state.repo.checkpoint_wal()?;
+        backup::restore_db(&state.db_path, &got)?;
+        // Buka ulang koneksi agar tak menunjuk isi lama; restart tak diperlukan.
+        state.repo.reopen()?;
+        log::info!("restore dari {}", got.display());
+        state.repo.insert_audit(
+            &s.username,
+            "restore",
+            "db",
+            "-",
+            &got.display().to_string(),
+        )?;
+        Ok("ok — database hasil restore sudah aktif".into())
     }
 
     #[tauri::command]
@@ -2458,8 +2806,15 @@ pub mod commands {
     ) -> Result<serde_json::Value, AppError> {
         let s = require(&state, &token, "sync.*")
             .or_else(|_| require(&state, &token, "device.manage"))?;
-        parse_date(&start_date)?;
-        parse_date(&end_date)?;
+        let start = parse_date(&start_date)?;
+        let end = parse_date(&end_date)?;
+        if end < start {
+            return Err(AppError::Validation("rentang tanggal terbalik".into()));
+        }
+        // Batasi 62 hari agar UPDATE massal tak membebani DB.
+        if (end - start).num_days() > 62 {
+            return Err(AppError::Validation("rentang maksimal 62 hari".into()));
+        }
         let start_s = format!("{start_date} 00:00:00");
         let end_s = format!("{end_date} 23:59:59");
         let n = state.repo.exec(
@@ -2504,11 +2859,11 @@ pub mod commands {
             std::time::Duration::from_secs(10),
         )
         .map_err(|e| AppError::Device(e.to_string()))?;
-        let users = a
+        let res = a
             .fetch_device_users()
-            .map_err(|e| AppError::Device(e.to_string()))?;
+            .map_err(|e| AppError::Device(e.to_string()));
         let _ = a.disconnect();
-        Ok(serde_json::to_value(users).unwrap())
+        Ok(serde_json::to_value(res?).unwrap())
     }
 
     #[tauri::command]
@@ -2543,12 +2898,14 @@ pub mod commands {
             std::time::Duration::from_secs(10),
         )
         .map_err(|e| AppError::Device(e.to_string()))?;
-        a.provision_user(&devices::adapter::DeviceUser {
-            device_user_id: device_user_id.clone(),
-            name: name.clone(),
-        })
-        .map_err(|e| AppError::Device(e.to_string()))?;
+        let res = a
+            .provision_user(&devices::adapter::DeviceUser {
+                device_user_id: device_user_id.clone(),
+                name: name.clone(),
+            })
+            .map_err(|e| AppError::Device(e.to_string()));
         let _ = a.disconnect();
+        res?;
         state.repo.insert_audit(
             &s.username,
             "provision_user",
@@ -2565,7 +2922,9 @@ pub mod commands {
         state: tauri::State<AppState>,
         token: String,
     ) -> Result<serde_json::Value, AppError> {
-        require(&state, &token, "attendance.view")?;
+        // Saldo semua karyawan = data sensitif: butuh leave.view (bukan viewer).
+        require(&state, &token, "leave.view")
+            .or_else(|_| require(&state, &token, "leave.manage"))?;
         let rows: Vec<serde_json::Value> = state.repo.query_rows(
             "SELECT e.id, e.nik, e.name, t.code, t.name, t.quota_days,
                     COALESCE((SELECT SUM(CAST(julianday(end_date)-julianday(start_date) AS INTEGER)+1)
@@ -2600,12 +2959,18 @@ pub mod commands {
         query: String,
     ) -> Result<serde_json::Value, AppError> {
         require(&state, &token, "attendance.view")?;
-        let q = format!("%{}%", query.trim());
-        if q.len() < 3 {
-            return Err(AppError::Validation("kata kunci minimal 1 karakter".into()));
+        let trimmed = query.trim();
+        if trimmed.chars().count() < 2 {
+            return Err(AppError::Validation("kata kunci minimal 2 karakter".into()));
         }
+        // Escape wildcard LIKE agar %/_ dicari harfiah.
+        let esc = trimmed
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let q = format!("%{esc}%");
         let emps: Vec<serde_json::Value> = state.repo.query_rows(
-            "SELECT id, nik, name, status FROM employees WHERE deleted_at IS NULL AND (nik LIKE ?1 OR name LIKE ?1) LIMIT 10",
+            "SELECT id, nik, name, status FROM employees WHERE deleted_at IS NULL AND (nik LIKE ?1 ESCAPE '\\' OR name LIKE ?1 ESCAPE '\\') LIMIT 10",
             &[&q],
             |r| {
                 Ok(serde_json::json!({"kind": "karyawan", "id": r.get::<_, String>(0)?,
@@ -2614,7 +2979,7 @@ pub mod commands {
             },
         )?;
         let devs: Vec<serde_json::Value> = state.repo.query_rows(
-            "SELECT id, name, status FROM devices WHERE is_active=1 AND name LIKE ?1 LIMIT 10",
+            "SELECT id, name, status FROM devices WHERE is_active=1 AND name LIKE ?1 ESCAPE '\\' LIMIT 10",
             &[&q],
             |r| {
                 Ok(
@@ -2634,9 +2999,14 @@ pub mod commands {
         start_date: String,
         end_date: String,
     ) -> Result<serde_json::Value, AppError> {
-        require(&state, &token, "attendance.view")?;
-        parse_date(&start_date)?;
-        parse_date(&end_date)?;
+        require(&state, &token, "shift.view")
+            .or_else(|_| require(&state, &token, "shift.manage"))
+            .or_else(|_| require(&state, &token, "attendance.view"))?;
+        let s = parse_date(&start_date)?;
+        let e = parse_date(&end_date)?;
+        if e < s {
+            return Err(AppError::Validation("rentang tanggal terbalik".into()));
+        }
         let rows: Vec<Vec<String>> = state.repo.query_rows(
             "SELECT e.nik, e.name, s.code, a.effective_date, COALESCE(a.end_date,'') FROM shift_assignments a
              JOIN employees e ON e.id=a.employee_id JOIN shifts s ON s.id=a.shift_id
@@ -2721,6 +3091,9 @@ pub mod commands {
             if !end.is_empty() && parse_date(&end).is_err() {
                 errs.push("kolom akhir harus YYYY-MM-DD/kosong".into());
             }
+            if errs.is_empty() && !end.is_empty() && end < eff {
+                errs.push("kolom akhir sebelum efektif".into());
+            }
             if !errs.is_empty() {
                 errors.push(format!("baris {line}: {}", errs.join(", ")));
             }
@@ -2747,22 +3120,46 @@ pub mod commands {
             let sid = r.get("shift_id").and_then(|v| v.as_str()).unwrap_or("");
             let eff = r.get("eff").and_then(|v| v.as_str()).unwrap_or("");
             let end = r.get("end").and_then(|v| v.as_str()).unwrap_or("");
-            if eid.is_empty() || sid.is_empty() || parse_date(eff).is_err() {
-                fail += 1;
-                messages.push(format!("baris {i}: data tidak valid"));
-                continue;
-            }
-            let dup: i64 = state
+            // Verifikasi ulang ID terhadap database (jangan percaya preview mentah).
+            let emp_ok: i64 = state
                 .repo
                 .query_one(
-                    "SELECT COUNT(*) FROM shift_assignments WHERE employee_id=?1 AND shift_id=?2 AND effective_date=?3",
-                    &[&eid.to_string(), &sid.to_string(), &eff.to_string()],
+                    "SELECT COUNT(*) FROM employees WHERE id=?1",
+                    &[&eid.to_string()],
                     |x| x.get(0),
                 )?
                 .unwrap_or(0);
-            if dup > 0 {
+            let shift_ok: i64 = state
+                .repo
+                .query_one(
+                    "SELECT COUNT(*) FROM shifts WHERE id=?1",
+                    &[&sid.to_string()],
+                    |x| x.get(0),
+                )?
+                .unwrap_or(0);
+            if emp_ok == 0 || shift_ok == 0 || parse_date(eff).is_err() {
                 fail += 1;
-                messages.push(format!("baris {i}: duplikat, dilewati"));
+                messages.push(format!(
+                    "baris {i}: karyawan/shift tak dikenal atau tanggal salah"
+                ));
+                continue;
+            }
+            if !end.is_empty() && (parse_date(end).is_err() || end < eff) {
+                fail += 1;
+                messages.push(format!("baris {i}: tanggal akhir salah"));
+                continue;
+            }
+            let clash: i64 = state
+                .repo
+                .query_one(
+                    "SELECT COUNT(*) FROM shift_assignments WHERE employee_id=?1 AND effective_date<=?2 AND (end_date IS NULL OR end_date>=?3)",
+                    &[&eid.to_string(), &new_end_or_max(end), &eff.to_string()],
+                    |x| x.get(0),
+                )?
+                .unwrap_or(0);
+            if clash > 0 {
+                fail += 1;
+                messages.push(format!("baris {i}: bentrok penugasan lain, dilewati"));
                 continue;
             }
             let id = uid();
@@ -2906,16 +3303,35 @@ pub mod commands {
                 100
             )
             .is_err());
-            let big = dir.path().join("b.png");
-            std::fs::write(&big, vec![0u8; 200]).unwrap();
+            // Magic bytes PNG asli agar lolos cek tipe; ukuran yang diuji.
+            let mut big = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+            big.resize(200, 0);
+            let big_f = dir.path().join("b.png");
+            std::fs::write(&big_f, &big).unwrap();
             assert!(
-                store_upload(&st, "photos", "e1", big.to_str().unwrap(), &["png"], 10).is_err()
+                store_upload(&st, "photos", "e1", big_f.to_str().unwrap(), &["png"], 10).is_err()
             );
+            let mut okb = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+            okb.resize(50, 0);
             let ok = dir.path().join("o.png");
-            std::fs::write(&ok, vec![0u8; 50]).unwrap();
+            std::fs::write(&ok, &okb).unwrap();
             let dest =
                 store_upload(&st, "photos", "e1", ok.to_str().unwrap(), &["png"], 1000).unwrap();
             assert!(std::path::Path::new(&dest).is_file());
+            // Isi JPEG dengan ekstensi PNG ditolak (magic mismatch).
+            let mut fake = vec![0xFF, 0xD8, 0xFF, 0xE0];
+            fake.resize(50, 0);
+            let fake_f = dir.path().join("f.png");
+            std::fs::write(&fake_f, &fake).unwrap();
+            assert!(store_upload(
+                &st,
+                "photos",
+                "e1",
+                fake_f.to_str().unwrap(),
+                &["png"],
+                1000
+            )
+            .is_err());
         }
 
         #[test]
@@ -2956,6 +3372,9 @@ pub mod commands {
             assert!(has(OperatorDevice, "sync.run"));
             assert!(!has(OperatorDevice, "leave.manage"));
             assert!(has(Supervisor, "leave.approve"));
+            assert!(has(Supervisor, "leave.view"));
+            assert!(has(Supervisor, "employee.view"));
+            assert!(!has(Supervisor, "employee.manage"));
             assert!(!has(Supervisor, "device.manage"));
             assert!(has(Viewer, "report.view"));
             assert!(!has(HrAdmin, "user.manage"));
@@ -3096,6 +3515,111 @@ pub mod commands {
             assert!(apply_swap_decision(&st.repo, "sw2", true, "tester").is_err());
             // ID tak dikenal → NotFound.
             assert!(apply_swap_decision(&st.repo, "tidak-ada", true, "tester").is_err());
+        }
+
+        #[test]
+        fn validate_required_rejects_empty() {
+            let bad = serde_json::json!({"nik": "", "name": "X", "hire_date": "2024-01-01"});
+            assert!(validate_required("employees", &bad).is_err());
+            let missing = serde_json::json!({"name": "X"});
+            assert!(validate_required("employees", &missing).is_err());
+            let ok = serde_json::json!({"nik": "N1", "name": "X", "hire_date": "2024-01-01"});
+            assert!(validate_required("employees", &ok).is_ok());
+        }
+
+        #[test]
+        fn insert_parts_skips_empty_and_stamps_time() {
+            let cols = [
+                "id",
+                "nik",
+                "name",
+                "manager_id",
+                "created_at",
+                "updated_at",
+            ];
+            let data = serde_json::json!({"nik": "N1", "name": "X", "manager_id": ""});
+            let (keys, _) = insert_parts(&cols, "employees", &data, "e1", "2026-01-01 00:00:00");
+            assert!(keys.contains(&"nik".to_string()));
+            // '' pada kolom non-wajib dilewati (jadi NULL), bukan sampah.
+            assert!(!keys.contains(&"manager_id".to_string()));
+            // Stempel otomatis untuk kolom yang tidak dikirim.
+            assert!(keys.contains(&"created_at".to_string()));
+            assert!(keys.contains(&"updated_at".to_string()));
+        }
+
+        #[test]
+        fn update_parts_password_and_null() {
+            // Password kosong diabaikan; isi di-hash (bukan plaintext).
+            let (sets, vals) = update_parts("users", &serde_json::json!({"password": ""})).unwrap();
+            assert!(sets.is_empty() && vals.is_empty());
+            let (sets, vals) =
+                update_parts("users", &serde_json::json!({"password": "rahasia123"})).unwrap();
+            assert_eq!(sets, vec!["password_hash=?".to_string()]);
+            assert!(vals[0].starts_with("$argon2"));
+            // null eksplisit → SET NULL; '' → dipertahankan (dilewati).
+            let (sets, _) =
+                update_parts("shift_assignments", &serde_json::json!({"end_date": null})).unwrap();
+            assert_eq!(sets, vec!["end_date=NULL".to_string()]);
+            let (sets, _) = update_parts("shifts", &serde_json::json!({"name": ""})).unwrap();
+            assert!(sets.is_empty());
+            // Role tak dikenal ditolak.
+            assert!(update_parts("users", &serde_json::json!({"role": "raja"})).is_err());
+        }
+
+        #[test]
+        fn guard_user_delete_protects_self_and_last_admin() {
+            let st = test_state();
+            for (id, uname, role) in [("u1", "root", "super_admin"), ("u2", "hr", "hr_admin")] {
+                st.repo
+                    .exec(
+                        "INSERT INTO users (id, username, display_name, role, password_hash, created_at)
+                         VALUES (?1,?2,?3,?4,'h','2026-01-01 00:00:00')",
+                        &[&id.to_string(), &uname.to_string(), &uname.to_string(), &role.to_string()],
+                    )
+                    .unwrap();
+            }
+            // Diri sendiri tidak bisa dihapus.
+            assert!(guard_user_delete(&st.repo, "root", "u1").is_err());
+            // Super admin terakhir tidak bisa dihapus.
+            assert!(guard_user_delete(&st.repo, "hr", "u1").is_err());
+            // User biasa bisa dihapus orang lain.
+            assert!(guard_user_delete(&st.repo, "root", "u2").is_ok());
+            // ID tak dikenal → NotFound.
+            assert!(guard_user_delete(&st.repo, "root", "xx").is_err());
+        }
+
+        #[test]
+        fn table_columns_have_no_duplicate_tables() {
+            let mut seen = std::collections::HashSet::new();
+            for (name, _) in TABLE_COLUMNS {
+                assert!(seen.insert(*name), "duplikat: {name}");
+            }
+            // Semua tabel CRUD frontend terdaftar.
+            for t in [
+                "employees",
+                "branches",
+                "departments",
+                "positions",
+                "employee_device_map",
+                "devices",
+                "device_connection_log",
+                "shifts",
+                "shift_assignments",
+                "attendance_results",
+                "raw_events",
+                "leave_requests",
+                "overtime_requests",
+                "leave_types",
+                "work_calendar",
+                "holidays",
+                "attendance_policy",
+                "shift_swaps",
+                "app_settings",
+                "users",
+                "audit_log",
+            ] {
+                assert!(columns_of(t).is_ok(), "hilang: {t}");
+            }
         }
     }
 

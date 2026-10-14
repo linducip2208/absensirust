@@ -1,4 +1,59 @@
-# Laporan Pengujian (hasil aktual — build 5 finalisasi: 2026-10-14, Windows 11 x64)
+# Laporan Pengujian (hasil aktual — build 6: 2026-10-14, Windows 11 x64)
+
+## 0. Build 6 — aplikasi berjalan lengkap (kontrak IPC + keamanan + distribusi)
+
+Latar: audit menemukan argumen IPC frontend camelCase vs backend snake_case
+(Tauri mencocokkan by name) sehingga hampir semua CRUD/sync/laporan gagal —
+inilah penyebab "belum berjalan lengkap". Semua diperbaiki + dikunci contract test.
+
+| Perintah | Hasil |
+|---|---|
+| `npx tsc --noEmit` | **LULUS** |
+| `npx eslint "src/**/*.ts" "src/**/*.tsx" --max-warnings 0` | **LULUS** (0 warning) |
+| `npx vitest run` | **LULUS — 9/9** (3 lama + 6 kontrak IPC snake_case) |
+| `npm run build` | **LULUS** → `dist/` |
+| `cargo fmt --all --check` | **LULUS** (0 diff) |
+| `cargo clippy --all-targets --all-features -- -D warnings` | **LULUS** (0 warning) |
+| `cargo test` | **LULUS — 70/70 lib**, 0 gagal, 4 `#[ignore]` (gerbang hardware) |
+| `npx tauri build` (NSIS) | **LULUS** — exe 14,38 MB + setup 3,48 MB |
+| Smoke test exe 15 dtk + DB | **LULUS** — hidup, integrity ok, 26 tabel, migrasi DB lama aman |
+
+### Bug nyata diperbaiki (build 6)
+
+1. **Kontrak IPC**: 40+ argumen `api.ts` ke snake_case + 6 grup contract test.
+2. **Keamanan**: guard hapus users (super_admin, bukan diri sendiri/admin
+   terakhir), blok hapus `audit_log`/`app_settings`, `validate_required` &&→||
+   (kolom wajib kosong kini ditolak), `password` virtual di update (hash Argon2),
+   validasi jam shift HH:MM (anti-panic engine), validasi `end_date`/role.
+3. **Integritas data**: `''`→NULL/default saat create/update (FK/numerik/
+   `end_date IS NULL` aman), `end_date` bisa dikosongkan (NULL eksplisit),
+   `schedule_bulk` tolak duplikat range + cek karyawan, `schedule_copy_week`
+   boleh mundur + hanya salin baris minggu sumber + cek overlap,
+   `schedule_import_commit` verifikasi ulang ID + cek overlap + validasi end.
+4. **Hitung absensi**: permission tulis (viewer/operator/supervisor tak bisa
+   hitung), libur/weekday/Izin (IZIN) dihitung, event luar window tak ditandai
+   processed, waktu korup dilewati + dihitung, tanpa jadwal → dilewati (tak
+   dikarang), koreksi tervalidasi + NULL aman, dashboard tak hitung libur
+   sebagai mangkir + COALESCE + validasi tanggal.
+5. **Impor karyawan**: validasi tanggal/email/duplikat NIK (file+DB),
+   hire kosong → hari ini WIB, batas 200 baris diberi tahu.
+6. **Backup/restore**: checkpoint WAL, validasi integrity read-only, path
+   wajib dalam folder backups, reopen koneksi (tanpa restart), hapus WAL basi.
+7. **Upload**: magic bytes PNG/JPG/PDF, respons nama file (bukan path absolut),
+   WIB konsisten.
+8. **Lainnya**: search ESCAPE + min 2 chars, requeue batas 62 hari + cek rentang,
+   saldo cuti butuh leave.view (supervisor dapat leave.view+employee.view),
+   disconnect selalu dipanggil, rate-limit case-insensitive + purge,
+   purge sesi kedaluwarsa, mutex anti double-sync, label role Indonesia,
+   pencarian min 2 chars + empty state.
+9. **Distribusi**: `distribusi/` disegarkan ke build 6 (exe+installer+dokumen),
+   panduan DLL per vendor, VERSI/BACA-DULU baru.
+
+### Test baru (build 6): 70 lib + 9 frontend
+
+Backend +5: `validate_required_rejects_empty`, `insert_parts_skips_empty_and_stamps_time`,
+`update_parts_password_and_null`, `guard_user_delete_protects_self_and_last_admin`,
+`table_columns_have_no_duplicate_tables`. Frontend +6 grup kontrak IPC.
 
 ## 0. Build 5 — finalisasi total (semua perintah benar-benar dijalankan)
 

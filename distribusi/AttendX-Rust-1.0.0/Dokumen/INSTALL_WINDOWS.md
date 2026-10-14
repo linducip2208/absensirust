@@ -45,6 +45,41 @@ Hasil:
    (selama tabel `users` kosong).
 4. Database dibuat otomatis di `%APPDATA%\AttendX\attendx.db`.
 
+## SDK vendor: unduh & taruh (untuk koneksi mesin absensi)
+
+Tanpa langkah ini, menu Devices hanya bisa memakai mock SIMULATED; test
+koneksi hardware akan gagal dengan pesan yang jelas (bukan data karangan).
+
+```powershell
+# Dari root repo — unduh langsung semua SDK (git + curl, idempoten):
+powershell -ExecutionPolicy Bypass -File vendor_sdk/download.ps1
+
+# Taruh DLL runtime ke src-tauri/sdk/ (+ target/debug|release bila ada),
+# lengkap dengan MANIFEST.json hasil verifikasi arsitektur x64:
+powershell -ExecutionPolicy Bypass -File vendor_sdk/stage.ps1
+```
+
+**Di mesin kasir** (setelah install aplikasi):
+
+1. Salin isi `src-tauri/sdk/` ke folder exe
+   (`C:\Program Files\AttendX Rust\`) atau subfolder `sdk\`,
+   atau ke `%APPDATA%\AttendX\sdk\`.
+2. Khusus ZKTeco/Solution — daftarkan COM sekali sebagai Administrator:
+   `regsvr32 zkemkeeper.dll` (atau `Register_SDK x64.bat` dari paket SDK).
+   Hikvision (`HCNetSDK.dll`) tidak perlu registrasi.
+3. Di aplikasi: isi IP di kolom host perangkat; untuk ZK
+   `config_json` opsional `{"port":4370,"machine":1}`, untuk Hikvision wajib
+   `{"port":8000,"username":"admin","password":"..."}`.
+4. Verifikasi lewat command `device_sdk_status` (DLL ketemu? x64?
+   terdaftar/termuat?) lalu `Test Koneksi` di menu Devices.
+
+> **Lisensi**: paket SDK tidak mencantumkan izin redistribusi eksplisit
+> (manual ZKTeco © All rights reserved; DLL Hikvision milik Hikvision).
+> Karena itu installer **tidak** membundel DLL. Membundel = keputusan +
+> tanggung jawab distributor (minta izin tertulis vendor). Untuk membundel
+> setelah izin ada: jalankan `stage.ps1`, tambahkan `"resources": ["sdk"]`
+> ke `tauri.conf.json` → `bundle.resources`, lalu `npx tauri build`.
+
 ## Offline
 
 Aplikasi 100% lokal: tidak ada panggilan jaringan, tidak ada CDN

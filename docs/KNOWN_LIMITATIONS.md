@@ -1,4 +1,4 @@
-# Keterbatasan yang Diketahui (jujur, per 2026-10-14 — build 5)
+# Keterbatasan yang Diketahui (jujur, per 2026-10-14 — build 6)
 
 1. **Adapter vendor terimplementasi, BELUM teruji hardware.** ZKTeco &
    Solution (COM CZKEM: fetch log/user/provision/info) dan Hikvision

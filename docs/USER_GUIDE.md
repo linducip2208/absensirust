@@ -68,13 +68,19 @@ Semua jam yang tampil adalah **WIB (Asia/Jakarta)**.
 ## 7. Perangkat
 
 - Tambah perangkat: nama, merek, model, serial, IP/host, cabang, lokasi,
-  tipe koneksi, **nama adapter** (mis. `mock-simulated` untuk uji;
-  `timetech-ac6`, `zkteco-terminal`, `hikvision-terminal`, `solution-terminal`
-  untuk target integrasi — lihat status SDK di bawah).
+  tipe koneksi, **nama adapter** (pilih dari daftar: `mock-simulated` untuk
+  uji; `zkteco-terminal`, `solution-terminal`, `hikvision-terminal` untuk
+  mesin asli; `timetech-ac6` belum didukung).
+- **Koneksi & kredensial (kolom config_json, format JSON)**:
+  ZKTeco/Solution: `{"port":4370,"machine":1}`;
+  Hikvision: `{"port":8000,"username":"admin","password":"..."}`.
+- **Tabel "DLL vendor di mesin ini"**: pastikan status **Siap** sebelum test
+  koneksi. Kalau Belum: salin DLL ke folder exe/`exe/sdk`/`%APPDATA%\AttendX\sdk`
+  (ZK: registrasi `regsvr32 zkemkeeper.dll` sekali sebagai Administrator).
 - **Test koneksi**: cek cepat + catat riwayat (berhasil/gagal + durasi).
 - **Sync log**: tarik log absensi (incremental via checkpoint, idempotent).
-- Registry adapter menampilkan status jujur: semua vendor nyata berstatus
-  **BUTUH SDK/HARDWARE**; mock selalu **SIMULATED**.
+- Registry adapter menampilkan status jujur per vendor + operasi yang
+  didukung; mock selalu **SIMULATED** (jangan dipakai untuk produksi).
 
 ## 8. Izin, Cuti & Lembur
 
@@ -96,8 +102,9 @@ Semua jam yang tampil adalah **WIB (Asia/Jakarta)**.
 ## 11. Backup & Kesehatan
 
 - **Buat backup sekarang** → file `attendx-backup-<waktu>.db` (rotasi 10 file).
-- **Restore**: isi path file → validasi header SQLite dulu → DB aktif diganti
-  (salinan pengaman dibuat otomatis) → restart aplikasi.
+- **Restore**: *Pilih file…* (hanya dari folder backups) → validasi
+  integritas dulu → DB aktif diganti (salinan pengaman `pre-restore-*`
+  dibuat otomatis) → langsung aktif tanpa restart.
 - **Periksa sekarang**: versi app, versi DB, `integrity_check`, jam WIB.
 
 ## 12. Pengguna & Audit

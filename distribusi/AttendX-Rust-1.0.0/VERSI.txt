@@ -1,14 +1,20 @@
 AttendX Rust
-Versi aplikasi : 1.0.0 (build 2, 2026-10-14)
-Versi database : 7 (migrasi v1-v7: +app_settings, +shift_swaps)
+Versi aplikasi : 1.0.0 (build 6, 2026-10-14)
+Versi database : 7 (migrasi v1-v7, kompatibel mundur — data lama tidak hilang)
 Target         : Windows 10/11 x64
-Tanggal build  : 2026-10-13
 Zona waktu     : Asia/Jakarta (WIB)
 Mode           : Offline (tanpa internet, tanpa CDN)
 
 Biner:
-- AttendX-Rust.exe (portable)
-- Installer\AttendX Rust_1.0.0_x64-setup.exe (NSIS)
+- AttendX-Rust.exe (portable, 14,38 MB)
+- Installer\AttendX Rust_1.0.0_x64-setup.exe (NSIS, 3,48 MB)
 
-Status SDK hardware: BELUM ADA yang teruji (mock SIMULATED untuk demo/test).
-Lihat Dokumen\SDK_INVENTORY.md dan Dokumen\KNOWN_LIMITATIONS.md.
+Verifikasi build 6:
+- tsc + eslint + vitest 9/9 + npm build: LULUS
+- cargo fmt + clippy + cargo test 70/70 (+4 hardware di-ignore): LULUS
+- Smoke test: integrity_check ok, 26 tabel, tanpa kredensial default
+- PDF laporan multi-halaman tervalidasi
+
+SDK hardware: adapter ZKTeco/Solution/Hikvision terimplementasi (butuh DLL +
+uji perangkat fisik, lihat vendor-sdk\CARA-PASANG-DLL.txt). TIME TECH AC6
+BLOCKED (tanpa SDK PC dari vendor).

@@ -45,6 +45,27 @@ impl Repo {
             .map_err(|e| AppError::Db(format!("lock: {e}")))
     }
 
+    /// Checkpoint WAL agar copy file konsisten (sebelum backup/restore).
+    pub fn checkpoint_wal(&self) -> AppResult<()> {
+        let g = self.lock()?;
+        g.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .map_err(|e| AppError::Db(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Buka ulang koneksi ke file yang sama (dipakai setelah restore agar
+    /// koneksi tak menunjuk ke isi lama + WAL basi).
+    pub fn reopen(&self) -> AppResult<()> {
+        if self.path.as_os_str() == ":memory:" {
+            return Ok(());
+        }
+        let conn = Connection::open(&self.path).map_err(|e| AppError::Db(e.to_string()))?;
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
+            .map_err(|e| AppError::Db(e.to_string()))?;
+        *self.lock()? = conn;
+        Ok(())
+    }
+
     pub fn query_rows<T, F>(
         &self,
         sql: &str,
