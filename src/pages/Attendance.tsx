@@ -1,15 +1,17 @@
 import { useEffect, useState } from 'react';
 import { api, Row, todayWIB } from '../api';
 import Layout from '../components/Layout';
-import { Field, LoadingState, StatusBadge, useToast } from '../components/ui';
+import { EmptyState, Field, LoadingState, StatusBadge, useToast } from '../components/ui';
 
 export default function Attendance() {
   const toast = useToast();
   const [date, setDate] = useState(todayWIB());
   const [busy, setBusy] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [review, setReview] = useState<Row[]>([]);
   const [unmapped, setUnmapped] = useState<Row[]>([]);
   const [results, setResults] = useState<Row[]>([]);
+  const [names, setNames] = useState<Record<string, string>>({});
   const [correcting, setCorrecting] = useState<Row | null>(null);
   const [newValue, setNewValue] = useState('');
   const [reason, setReason] = useState('');
@@ -22,6 +24,10 @@ export default function Attendance() {
       setUnmapped(r.unmapped);
       const res = await api.tableList('attendance_results', 1, 50, date, 'work_date', 'desc');
       setResults(res.rows);
+      const emp = await api.tableList('employees', 1, 1000, '', 'name', 'asc');
+      const map: Record<string, string> = {};
+      for (const e of emp.rows) map[String(e.id)] = String(e.name ?? e.nik ?? e.id);
+      setNames(map);
     } catch (e) {
       toast.push('error', e instanceof Error ? e.message : String(e));
     }
@@ -45,11 +51,12 @@ export default function Attendance() {
   };
 
   const submitCorrection = async () => {
-    if (!correcting) return;
+    if (!correcting || saving) return;
     if (!reason.trim()) {
       toast.push('error', 'Alasan wajib diisi');
       return;
     }
+    setSaving(true);
     try {
       await api.attendanceCorrect(String(correcting.id), correctField, newValue, reason);
       toast.push('success', 'Koreksi tersimpan dengan jejak audit');
@@ -59,6 +66,8 @@ export default function Attendance() {
       await load();
     } catch (e) {
       toast.push('error', e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -105,9 +114,12 @@ export default function Attendance() {
               <tr><th>Tanggal</th><th>Karyawan</th><th>Masuk</th><th>Pulang</th><th>Kerja</th><th>Telat</th><th>Status</th><th>Anomali</th><th>Aksi</th></tr>
             </thead>
             <tbody>
+              {results.length === 0 && (
+                <tr><td colSpan={9}><EmptyState title="Belum ada hasil" hint="Klik hitung ulang atau ubah tanggal kerja." /></td></tr>
+              )}
               {results.map((r) => (
                 <tr key={String(r.id)}>
-                  <td>{String(r.work_date)}</td><td>{String(r.employee_id)}</td>
+                  <td>{String(r.work_date)}</td><td>{names[String(r.employee_id)] ?? String(r.employee_id)}</td>
                   <td>{String(r.clock_in || '-')}</td><td>{String(r.clock_out || '-')}</td>
                   <td>{String(r.work_minutes)} m</td><td>{String(r.late_minutes)} m</td>
                   <td><StatusBadge value={r.status} /></td>
@@ -183,7 +195,9 @@ export default function Attendance() {
               </div>
               <div className="modal-footer">
                 <button className="btn btn-link link-secondary" onClick={() => setCorrecting(null)}>Batal</button>
-                <button className="btn btn-warning" onClick={submitCorrection}>Simpan koreksi</button>
+                <button className="btn btn-warning" disabled={saving} onClick={submitCorrection}>
+                  {saving ? 'Menyimpan…' : 'Simpan koreksi'}
+                </button>
               </div>
             </div>
           </div>

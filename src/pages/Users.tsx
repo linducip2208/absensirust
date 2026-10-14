@@ -14,7 +14,7 @@ const USER: Column[] = [
       { value: 'viewer', label: 'Viewer/Auditor' },
     ],
   },
-  { key: 'password', label: 'Password baru', hideInTable: true },
+  { key: 'password', label: 'Password baru (kosong = tidak diubah)', type: 'password', hideInTable: true },
   { key: 'is_active', label: 'Aktif', type: 'select', options: [{ value: '1', label: 'Ya' }, { value: '0', label: 'Tidak' }] },
 ];
 

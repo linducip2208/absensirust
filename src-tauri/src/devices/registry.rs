@@ -50,9 +50,9 @@ impl DeviceRegistry {
                     "X609".into(),
                     "X900".into(),
                 ],
-                sdk_version: "6.3.1.54 (ZKEM x64+x86, dari solution.co.id)".into(),
+                sdk_version: "6.3.1.54 (ZKEM x64+x86, dari support Solution)".into(),
                 dll_arch: "x64 + x86 (terverifikasi header PE)".into(),
-                status: "TERSEDIA — inti COM sama dengan ZKTeco (satu platform); butuh hardware untuk uji"
+                status: "TERSEDIA — inti COM sama dengan ZKTeco (satu keluarga SDK); TIAP MODEL butuh uji hardware sendiri"
                     .into(),
                 supported_ops: vec![
                     "fetch_logs".into(),
@@ -60,7 +60,7 @@ impl DeviceRegistry {
                     "provision_user".into(),
                     "device_info".into(),
                 ],
-                missing: "Perangkat fisik untuk uji connect/fetch/provision.".into(),
+                missing: "Uji hardware per model (daftar model = klaim vendor solution.co.id, bukan hasil uji).".into(),
             },
             RegistryEntry {
                 adapter_name: "hikvision-terminal".into(),

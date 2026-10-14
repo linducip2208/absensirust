@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { api, DashboardData, todayWIB } from '../api';
 import Layout from '../components/Layout';
-import { LoadingState, StatusBadge, useToast } from '../components/ui';
+import { EmptyState, LoadingState, StatusBadge, useToast } from '../components/ui';
 
 function StatCard({ label, value, color }: { label: string; value: number; color: string }) {
   return (
@@ -22,11 +22,14 @@ export default function Dashboard() {
   const toast = useToast();
   const [data, setData] = useState<DashboardData | null>(null);
   const [date, setDate] = useState(todayWIB());
+  const [failed, setFailed] = useState(false);
 
   const load = async (d: string) => {
+    setFailed(false);
     try {
       setData(await api.dashboard(d));
     } catch (e) {
+      setFailed(true);
       toast.push('error', e instanceof Error ? e.message : String(e));
     }
   };
@@ -44,7 +47,14 @@ export default function Dashboard() {
         <div className="col text-secondary">Semua angka dihitung dari database (WIB). Tidak ada angka contoh.</div>
       </div>
       {!data ? (
-        <LoadingState text="Memuat dashboard…" />
+        failed ? (
+          <div className="card"><div className="card-body">
+            <EmptyState title="Dashboard gagal dimuat" hint="Periksa koneksi database lalu klik Muat ulang." />
+            <button className="btn btn-outline-primary mt-2" onClick={() => load(date)}>Muat ulang</button>
+          </div></div>
+        ) : (
+          <LoadingState text="Memuat dashboard…" />
+        )
       ) : (
         <>
           <div className="row row-deck row-cards mb-3">
@@ -80,6 +90,9 @@ export default function Dashboard() {
                   <table className="table card-table table-vcenter">
                     <thead><tr><th>Kode</th><th>Nama</th><th>Hadir</th></tr></thead>
                     <tbody>
+                      {data.shifts.length === 0 && (
+                        <tr><td colSpan={3}><EmptyState title="Belum ada shift" hint="Buat shift di menu Shift." /></td></tr>
+                      )}
                       {data.shifts.map((s) => (
                         <tr key={s.code}><td>{s.code}</td><td>{s.name}</td><td>{s.count}</td></tr>
                       ))}
@@ -114,6 +127,9 @@ export default function Dashboard() {
                   <table className="table card-table table-vcenter">
                     <thead><tr><th>Tanggal</th><th>Nama</th><th>Masuk</th><th>Pulang</th><th>Status</th></tr></thead>
                     <tbody>
+                      {data.recent.length === 0 && (
+                        <tr><td colSpan={5}><EmptyState title="Belum ada aktivitas" hint="Hitung absensi atau sinkronkan perangkat." /></td></tr>
+                      )}
                       {data.recent.map((r, i) => (
                         <tr key={i}>
                           <td>{r.date}</td><td>{r.name}</td><td>{r.in ?? '-'}</td><td>{r.out ?? '-'}</td>

@@ -589,7 +589,16 @@ pub mod commands {
         let (rows, total) = state
             .repo
             .paginate(&base, &count_sql, &[&like_s], page, per_page)?;
-        // sembunyikan password_hash bila ada
+        // sembunyikan password_hash bila ada (tidak boleh keluar via IPC)
+        let rows = rows
+            .into_iter()
+            .map(|mut v| {
+                if let Some(o) = v.as_object_mut() {
+                    o.remove("password_hash");
+                }
+                v
+            })
+            .collect::<Vec<_>>();
         Ok(serde_json::json!({"rows": rows, "total": total}))
     }
 
@@ -610,7 +619,7 @@ pub mod commands {
         if g.is_empty() {
             return Err(AppError::NotFound(format!("{table}/{id}")));
         }
-        // ambil penuh sebagai map
+        // ambil penuh sebagai map (tanpa password_hash)
         let (rows, _) = state.repo.paginate(
             &format!("SELECT * FROM {table} WHERE id=?1"),
             &format!("SELECT COUNT(*) FROM {table} WHERE id=?1"),
@@ -618,7 +627,11 @@ pub mod commands {
             1,
             1,
         )?;
-        Ok(rows.into_iter().next().unwrap_or(serde_json::Value::Null))
+        let mut got = rows.into_iter().next().unwrap_or(serde_json::Value::Null);
+        if let Some(o) = got.as_object_mut() {
+            o.remove("password_hash");
+        }
+        Ok(got)
     }
 
     #[tauri::command]
@@ -762,14 +775,42 @@ pub mod commands {
                 "gunakan correction untuk mengubah hasil absensi (audit wajib)".into(),
             ));
         }
+        if table == "users" && s.role != Role::SuperAdmin {
+            return Err(AppError::Forbidden(
+                "hanya super_admin yang boleh kelola pengguna".into(),
+            ));
+        }
         let mut sets: Vec<String> = vec![];
         let mut vals: Vec<String> = vec![];
         for (k, v) in data.as_object().cloned().unwrap_or_default() {
             if k == "id" || !cols.contains(&k.as_str()) {
                 continue;
             }
-            if k == "password_hash" || k == "password" {
+            if k == "password_hash" {
                 continue;
+            }
+            if k == "password" {
+                // Password baru: kosong = tidak diubah; isi = hash Argon2.
+                let plain = match v {
+                    serde_json::Value::String(x) => x,
+                    x => x.to_string(),
+                };
+                if plain.trim().is_empty() {
+                    continue;
+                }
+                let hash = auth::hash_password(&plain)?;
+                sets.push("password_hash=?".to_string());
+                vals.push(hash);
+                continue;
+            }
+            if table == "users" && k == "role" {
+                let rv = match &v {
+                    serde_json::Value::String(x) => x.clone(),
+                    x => x.to_string(),
+                };
+                if Role::from_code(rv.trim()).is_none() {
+                    return Err(AppError::Validation("role tidak dikenal".into()));
+                }
             }
             sets.push(format!("{k}=?"));
             vals.push(match v {
@@ -1346,6 +1387,87 @@ pub mod commands {
         .unwrap_or(None)
     }
 
+    #[derive(Debug, PartialEq)]
+    struct ShiftOverlap {
+        employee_id: String,
+        name: String,
+        shift_a: String,
+        shift_b: String,
+        since: String,
+    }
+
+    /// Tumpang tindih: dua penugasan shift berbeda untuk karyawan yang sama
+    /// pada rentang tanggal yang beririsan.
+    fn find_shift_overlaps(
+        repo: &Repo,
+        start_date: &str,
+        end_date: &str,
+    ) -> AppResult<Vec<ShiftOverlap>> {
+        repo.query_rows(
+            "SELECT a.employee_id, e.name, s1.code, s2.code, MAX(a.effective_date, b.effective_date)
+             FROM shift_assignments a
+             JOIN shift_assignments b ON b.employee_id=a.employee_id AND b.id<>a.id AND b.shift_id<>a.shift_id
+               AND b.effective_date<=COALESCE(a.end_date,'9999-12-31') AND COALESCE(b.end_date,'9999-12-31')>=a.effective_date
+             JOIN employees e ON e.id=a.employee_id
+             JOIN shifts s1 ON s1.id=a.shift_id
+             JOIN shifts s2 ON s2.id=b.shift_id
+             WHERE a.effective_date<=?1 AND COALESCE(a.end_date,'9999-12-31')>=?2
+             GROUP BY a.employee_id",
+            &[&end_date.to_string(), &start_date.to_string()],
+            |r| {
+                Ok(ShiftOverlap {
+                    employee_id: r.get(0)?,
+                    name: r.get(1)?,
+                    shift_a: r.get(2)?,
+                    shift_b: r.get(3)?,
+                    since: r.get(4)?,
+                })
+            },
+        )
+    }
+
+    /// Terapkan keputusan tukar shift: ubah status + (bila disetujui) buat
+    /// penugasan satu hari pada tanggal swap. Histori lama tetap utuh.
+    fn apply_swap_decision(
+        repo: &Repo,
+        swap_id: &str,
+        approve: bool,
+        username: &str,
+    ) -> AppResult<()> {
+        let row: Option<(String, String, String, String)> = repo.query_one(
+            "SELECT employee_id, to_shift_id, swap_date, status FROM shift_swaps WHERE id=?1",
+            &[&swap_id.to_string()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )?;
+        let Some((eid, to_sid, sdate, status)) = row else {
+            return Err(AppError::NotFound("pengajuan tukar".into()));
+        };
+        if status != "pending" {
+            return Err(AppError::Conflict("pengajuan sudah diputuskan".into()));
+        }
+        let ts = now();
+        let new_status = if approve { "approved" } else { "rejected" };
+        repo.exec(
+            "UPDATE shift_swaps SET status=?1, decided_by=?2, decided_at=?3 WHERE id=?4",
+            &[
+                &new_status.to_string(),
+                &username.to_string(),
+                &ts,
+                &swap_id.to_string(),
+            ],
+        )?;
+        if approve {
+            let aid = uid();
+            repo.exec(
+                "INSERT INTO shift_assignments (id, employee_id, shift_id, effective_date, end_date, created_by, created_at)
+                 VALUES (?1,?2,?3,?4,?4,?5,?6)",
+                &[&aid, &eid, &to_sid, &sdate, &username.to_string(), &ts],
+            )?;
+        }
+        repo.insert_audit(username, "swap_decide", "shift_swaps", swap_id, new_status)?;
+        Ok(())
+    }
+
     #[tauri::command]
     pub fn schedule_week(
         state: tauri::State<AppState>,
@@ -1573,27 +1695,19 @@ pub mod commands {
             return Err(AppError::Validation("rentang tanggal terbalik".into()));
         }
         // Tumpang tindih: dua penugasan shift berbeda untuk karyawan yang sama pada tanggal yang sama.
-        let overlaps: Vec<serde_json::Value> = state.repo.query_rows(
-            "SELECT a.employee_id, e.name, s1.code, s2.code, MAX(a.effective_date, b.effective_date)
-             FROM shift_assignments a
-             JOIN shift_assignments b ON b.employee_id=a.employee_id AND b.id<>a.id AND b.shift_id<>a.shift_id
-               AND b.effective_date<=COALESCE(a.end_date,'9999-12-31') AND COALESCE(b.end_date,'9999-12-31')>=a.effective_date
-             JOIN employees e ON e.id=a.employee_id
-             JOIN shifts s1 ON s1.id=a.shift_id
-             JOIN shifts s2 ON s2.id=b.shift_id
-             WHERE a.effective_date<=?1 AND COALESCE(a.end_date,'9999-12-31')>=?2
-             GROUP BY a.employee_id",
-            &[&end_date, &start_date],
-            |r| {
-                Ok(serde_json::json!({
-                    "employee_id": r.get::<_, String>(0)?,
-                    "name": r.get::<_, String>(1)?,
-                    "shift_a": r.get::<_, String>(2)?,
-                    "shift_b": r.get::<_, String>(3)?,
-                    "since": r.get::<_, String>(4)?,
-                }))
-            },
-        )?;
+        let overlaps: Vec<serde_json::Value> =
+            find_shift_overlaps(&state.repo, &start_date, &end_date)?
+                .into_iter()
+                .map(|o| {
+                    serde_json::json!({
+                        "employee_id": o.employee_id,
+                        "name": o.name,
+                        "shift_a": o.shift_a,
+                        "shift_b": o.shift_b,
+                        "since": o.since,
+                    })
+                })
+                .collect();
         // Jadwal kosong: karyawan aktif tanpa penugasan efektif pada tiap tanggal.
         let emps: Vec<(String, String)> = state.repo.query_rows(
             "SELECT id, name FROM employees WHERE status='aktif' AND deleted_at IS NULL",
@@ -1647,7 +1761,7 @@ pub mod commands {
             &[
                 &id,
                 &employee_id,
-                &from_assign.unwrap_or_default(),
+                &from_assign,
                 &from_shift_id,
                 &to_shift_id,
                 &swap_date,
@@ -1673,39 +1787,7 @@ pub mod commands {
         approve: bool,
     ) -> Result<String, AppError> {
         let s = require(&state, &token, "shift.manage")?;
-        let row: Option<(String, String, String, String)> = state.repo.query_one(
-            "SELECT employee_id, to_shift_id, swap_date, status FROM shift_swaps WHERE id=?1",
-            &[&swap_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-        )?;
-        let Some((eid, to_sid, sdate, status)) = row else {
-            return Err(AppError::NotFound("pengajuan tukar".into()));
-        };
-        if status != "pending" {
-            return Err(AppError::Conflict("pengajuan sudah diputuskan".into()));
-        }
-        let ts = now();
-        let new_status = if approve { "approved" } else { "rejected" };
-        state.repo.exec(
-            "UPDATE shift_swaps SET status=?1, decided_by=?2, decided_at=?3 WHERE id=?4",
-            &[&new_status.to_string(), &s.username, &ts, &swap_id],
-        )?;
-        if approve {
-            // Penugasan satu hari pada tanggal swap; histori penugasan lama tetap utuh.
-            let aid = uid();
-            state.repo.exec(
-                "INSERT INTO shift_assignments (id, employee_id, shift_id, effective_date, end_date, created_by, created_at)
-                 VALUES (?1,?2,?3,?4,?4,?5,?6)",
-                &[&aid, &eid, &to_sid, &sdate, &s.username, &ts],
-            )?;
-        }
-        state.repo.insert_audit(
-            &s.username,
-            "swap_decide",
-            "shift_swaps",
-            &swap_id,
-            new_status,
-        )?;
+        apply_swap_decision(&state.repo, &swap_id, approve, &s.username)?;
         Ok("ok".into())
     }
 
@@ -2877,6 +2959,143 @@ pub mod commands {
             assert!(!has(Supervisor, "device.manage"));
             assert!(has(Viewer, "report.view"));
             assert!(!has(HrAdmin, "user.manage"));
+        }
+
+        fn seed_emp_with_assignments(st: &AppState) {
+            st.repo
+                .exec(
+                    "INSERT INTO employees (id, nik, name, hire_date, status, created_at, updated_at)
+                     VALUES ('e9','N9','Bentrok','2024-01-01','aktif','2026-01-01 00:00:00','2026-01-01 00:00:00')",
+                    &[],
+                )
+                .unwrap();
+        }
+
+        #[test]
+        fn shift_overlaps_detected_and_resolved() {
+            let st = test_state();
+            seed_emp_with_assignments(&st);
+            for (id, shift, eff, end) in [
+                ("o1", "sh-pagi", "2026-05-01", None),
+                ("o2", "sh-siang", "2026-05-10", None),
+            ] {
+                st.repo
+                    .exec(
+                        "INSERT INTO shift_assignments (id, employee_id, shift_id, effective_date, end_date, created_by, created_at)
+                         VALUES (?1,'e9',?2,?3,?4,'t','2026-01-01 00:00:00')",
+                        &[
+                            &id.to_string(),
+                            &shift.to_string(),
+                            &eff.to_string(),
+                            &end.unwrap_or(""),
+                        ],
+                    )
+                    .unwrap();
+            }
+            // end_date '' vs NULL: samakan jadi NULL agar COALESCE test realistis.
+            st.repo
+                .exec(
+                    "UPDATE shift_assignments SET end_date=NULL WHERE end_date=''",
+                    &[],
+                )
+                .unwrap();
+            let ov = find_shift_overlaps(&st.repo, "2026-05-01", "2026-05-31").unwrap();
+            assert_eq!(ov.len(), 1);
+            assert_eq!(ov[0].employee_id, "e9");
+            let mut codes = vec![ov[0].shift_a.clone(), ov[0].shift_b.clone()];
+            codes.sort();
+            assert_eq!(codes, vec!["PAGI".to_string(), "SIANG".to_string()]);
+            // Tutup penugasan pertama sebelum yang kedua mulai → bentrok hilang.
+            st.repo
+                .exec(
+                    "UPDATE shift_assignments SET end_date='2026-05-09' WHERE id='o1'",
+                    &[],
+                )
+                .unwrap();
+            let ov2 = find_shift_overlaps(&st.repo, "2026-05-01", "2026-05-31").unwrap();
+            assert!(ov2.is_empty());
+        }
+
+        #[test]
+        fn swap_approve_creates_one_day_assignment() {
+            let st = test_state();
+            seed_emp_with_assignments(&st);
+            st.repo
+                .exec(
+                    "INSERT INTO shift_assignments (id, employee_id, shift_id, effective_date, created_by, created_at)
+                     VALUES ('oa','e9','sh-pagi','2026-05-01','t','2026-01-01 00:00:00')",
+                    &[],
+                )
+                .unwrap();
+            st.repo
+                .exec(
+                    "INSERT INTO shift_swaps (id, employee_id, from_assignment_id, from_shift_id, to_shift_id, swap_date, reason, status, created_at)
+                     VALUES ('sw1','e9','oa','sh-pagi','sh-siang','2026-05-20','acara','pending','2026-01-01 00:00:00')",
+                    &[],
+                )
+                .unwrap();
+            apply_swap_decision(&st.repo, "sw1", true, "tester").unwrap();
+            let status: Option<String> = st
+                .repo
+                .query_one("SELECT status FROM shift_swaps WHERE id='sw1'", &[], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert_eq!(status.as_deref(), Some("approved"));
+            // Berlaku tepat di tanggal swap; histori lama utuh.
+            assert_eq!(
+                effective_shift(&st.repo, "e9", "2026-05-20").map(|x| x.0),
+                Some("sh-siang".to_string())
+            );
+            assert_eq!(
+                effective_shift(&st.repo, "e9", "2026-05-19").map(|x| x.0),
+                Some("sh-pagi".to_string())
+            );
+            let n: i64 = st
+                .repo
+                .query_one(
+                    "SELECT COUNT(*) FROM shift_assignments WHERE employee_id='e9'",
+                    &[],
+                    |r| r.get(0),
+                )
+                .unwrap()
+                .unwrap_or(0);
+            assert_eq!(n, 2);
+        }
+
+        #[test]
+        fn swap_reject_and_double_decide() {
+            let st = test_state();
+            seed_emp_with_assignments(&st);
+            st.repo
+                .exec(
+                    "INSERT INTO shift_swaps (id, employee_id, from_assignment_id, from_shift_id, to_shift_id, swap_date, reason, status, created_at)
+                     VALUES ('sw2','e9',NULL,'sh-pagi','sh-siang','2026-05-20','acara','pending','2026-01-01 00:00:00')",
+                    &[],
+                )
+                .unwrap();
+            apply_swap_decision(&st.repo, "sw2", false, "tester").unwrap();
+            let status: Option<String> = st
+                .repo
+                .query_one("SELECT status FROM shift_swaps WHERE id='sw2'", &[], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert_eq!(status.as_deref(), Some("rejected"));
+            let n: i64 = st
+                .repo
+                .query_one(
+                    "SELECT COUNT(*) FROM shift_assignments WHERE employee_id='e9'",
+                    &[],
+                    |r| r.get(0),
+                )
+                .unwrap()
+                .unwrap_or(0);
+            assert_eq!(n, 0);
+            // Keputusan kedua ditolak (konflik).
+            assert!(apply_swap_decision(&st.repo, "sw2", true, "tester").is_err());
+            // ID tak dikenal → NotFound.
+            assert!(apply_swap_decision(&st.repo, "tidak-ada", true, "tester").is_err());
         }
     }
 

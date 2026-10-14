@@ -13,7 +13,7 @@ export default function Login() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    api.hasAdmin().then(setNeedsSetup).catch((e: Error) => toast.push('error', e.message));
+    api.hasAdmin().then((h) => setNeedsSetup(!h)).catch((e: Error) => toast.push('error', e.message));
   }, []);
 
   const submit = async (e: React.FormEvent) => {

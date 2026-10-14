@@ -55,7 +55,7 @@ export async function invoke<T>(cmd: string, args: Record<string, unknown> = {})
 export const api = {
   hasAdmin: () => invoke<boolean>('has_admin'),
   setupAdmin: (username: string, display_name: string, password: string) =>
-    invoke<string>('setup_admin', { username, displayName: display_name, password }),
+    invoke<string>('setup_admin', { username, display_name, password }),
   login: (username: string, password: string) =>
     invoke<{ token: string; username: string; role: string }>('login', { username, password }),
   logout: () => invoke<string>('logout', { token: getToken() }),
@@ -74,6 +74,7 @@ export const api = {
   deviceTest: (deviceId: string) => invoke<unknown>('device_test', { token: getToken(), deviceId }),
   deviceSync: (deviceId: string) => invoke<SyncStats>('device_sync', { token: getToken(), deviceId }),
   deviceRegistry: () => invoke<RegistryEntry[]>('device_registry'),
+  deviceSdkStatus: () => invoke<SdkStatus[]>('device_sdk_status'),
   attendanceCompute: (workDate: string, employeeId?: string) =>
     invoke<{ computed: number; date: string }>('attendance_compute', {
       token: getToken(), workDate, employeeId: employeeId ?? null,
@@ -176,6 +177,18 @@ export interface RegistryEntry {
   status: string;
   supported_ops: string[];
   missing: string;
+}
+
+export interface SdkStatus {
+  adapter: string;
+  dll: string;
+  found: boolean;
+  path: string;
+  arch: string;
+  arch_ok?: boolean;
+  registered?: boolean;
+  loadable?: boolean;
+  hint: string;
 }
 
 export interface ImportRow {

@@ -1,9 +1,11 @@
-//! Adapter Solution (terminal absensi) — satu platform dengan ZKTeco (ZKEM).
+//! Adapter Solution (terminal absensi) — satu keluarga SDK dengan ZKTeco (ZKEM).
 //!
 //! Fakta vendor (terverifikasi): halaman resmi `solution.co.id/sdk.php`
-//! menyatakan SDK Solution = "ZKEM SDK" (ActiveX DLL + manual + contoh C#/VB),
-//! kompatibel dengan X100-C, X107, X105, X304/X305, X401, X601, X606-S, X609,
-//! X900, dsb. Paket `Standalone SDK 6.3.1.54` di `vendor_sdk/` berisi DLL +
+//! menyatakan SDK Solution = "ZKEM SDK" (ActiveX DLL + manual + contoh C#/VB)
+//! dan mencantumkan model yang kompatibel (X100-C, X107, X105, X304/X305,
+//! X401, X601, X606-S, X609, X900, dll). Daftar model = klaim vendor, BUKAN
+//! hasil pengujian — tiap model butuh uji hardware sendiri sebelum dinyatakan
+//! didukung. Paket `Standalone SDK 6.3.1.54` di `vendor_sdk/` berisi DLL +
 //! manual + demo ZKTeco yang sama persis. Maka adapter ini memakai inti COM
 //! yang sama (`zkcom`) dengan identitas Solution sendiri.
 

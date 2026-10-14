@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, ConflictReport, downloadFile, Row, ScheduleImportRow, ScheduleWeek, todayWIB } from '../api';
 import Layout from '../components/Layout';
-import { Field, LoadingState, StatusBadge, useToast } from '../components/ui';
+import { ConfirmDialog, EmptyState, Field, LoadingState, StatusBadge, useToast } from '../components/ui';
 
 function mondayOf(dateStr: string): string {
   const [y, m, d] = dateStr.split('-').map(Number);
@@ -18,8 +18,7 @@ function addDays(dateStr: string, n: number): string {
 }
 
 export default function Schedule() {
-  const toast = useToast();
-  const [weekStart, setWeekStart] = useState(mondayOf(todayWIB()));
+  const toast = useToast();  const [weekStart, setWeekStart] = useState(mondayOf(todayWIB()));
   const [data, setData] = useState<ScheduleWeek | null>(null);
   const [loading, setLoading] = useState(true);
   const [shifts, setShifts] = useState<Row[]>([]);
@@ -36,6 +35,10 @@ export default function Schedule() {
   const [busy, setBusy] = useState(false);
   const [impCsv, setImpCsv] = useState('');
   const [impPreview, setImpPreview] = useState<{ rows: ScheduleImportRow[]; errors: string[] } | null>(null);
+  const [deciding, setDeciding] = useState<{ id: string; approve: boolean } | null>(null);
+
+  const empName = (id: string) => employees.find((x) => String(x.id) === id)?.name ?? id;
+  const shiftCode = (id: string) => shifts.find((x) => String(x.id) === id)?.code ?? id;
 
   const load = async (ws: string) => {
     setLoading(true);
@@ -113,7 +116,7 @@ export default function Schedule() {
   };
 
   const doSwapDecide = async (id: string, approve: boolean) => {
-    if (approve && !confirm('Setujui tukar shift? Penugasan satu hari akan dibuat.')) return;
+    setDeciding(null);
     try {
       await api.swapDecide(id, approve);
       toast.push('success', approve ? 'Disetujui' : 'Ditolak');
@@ -192,8 +195,11 @@ export default function Schedule() {
           <div className="table-responsive">
             <table className="table card-table table-vcenter">
               <thead><tr><th>Karyawan</th>{data.days.map((d) => <th key={d}>{d.slice(5)}</th>)}</tr></thead>
-              <tbody>
-                {data.rows.map((r) => (
+            <tbody>
+              {data.rows.length === 0 && (
+                <tr><td colSpan={8}><EmptyState title="Belum ada penugasan minggu ini" hint="Gunakan penugasan massal, salin minggu, atau impor CSV." /></td></tr>
+              )}
+              {data.rows.map((r) => (
                   <tr key={r.employee_id}>
                     <td>{r.name}</td>
                     {data.days.map((d) => (
@@ -329,16 +335,19 @@ export default function Schedule() {
             <table className="table table-vcenter">
               <thead><tr><th>Tanggal</th><th>Karyawan</th><th>Dari → Ke</th><th>Status</th><th>Aksi</th></tr></thead>
               <tbody>
+                {swaps.length === 0 && (
+                  <tr><td colSpan={5}><EmptyState title="Belum ada pengajuan tukar shift" hint="" /></td></tr>
+                )}
                 {swaps.map((w) => (
                   <tr key={String(w.id)}>
-                    <td>{String(w.swap_date)}</td><td>{String(w.employee_id)}</td>
-                    <td>{String(w.from_shift_id)} → {String(w.to_shift_id)}</td>
+                    <td>{String(w.swap_date)}</td><td>{empName(String(w.employee_id))}</td>
+                    <td>{shiftCode(String(w.from_shift_id))} → {shiftCode(String(w.to_shift_id))}</td>
                     <td><StatusBadge value={w.status} /></td>
                     <td>
                       {String(w.status) === 'pending' && (
                         <div className="btn-list flex-nowrap">
-                          <button className="btn btn-sm btn-success" onClick={() => doSwapDecide(String(w.id), true)}>Setujui</button>
-                          <button className="btn btn-sm btn-outline-danger" onClick={() => doSwapDecide(String(w.id), false)}>Tolak</button>
+                          <button className="btn btn-sm btn-success" onClick={() => setDeciding({ id: String(w.id), approve: true })}>Setujui</button>
+                          <button className="btn btn-sm btn-outline-danger" onClick={() => setDeciding({ id: String(w.id), approve: false })}>Tolak</button>
                         </div>
                       )}
                     </td>
@@ -347,6 +356,15 @@ export default function Schedule() {
               </tbody>
             </table>
           </div>
+          {deciding && (
+            <ConfirmDialog
+              title={deciding.approve ? 'Setujui tukar shift?' : 'Tolak tukar shift?'}
+              body={deciding.approve ? 'Penugasan satu hari akan dibuat.' : 'Pengajuan akan ditandai ditolak.'}
+              confirmLabel={deciding.approve ? 'Setujui' : 'Tolak'}
+              onCancel={() => setDeciding(null)}
+              onConfirm={() => doSwapDecide(deciding.id, deciding.approve)}
+            />
+          )}
         </div>
       </div>
     </Layout>

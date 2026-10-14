@@ -1,4 +1,4 @@
-# Keterbatasan yang Diketahui (jujur, per 2026-10-14 — build 3)
+# Keterbatasan yang Diketahui (jujur, per 2026-10-14 — build 5)
 
 1. **Adapter vendor terimplementasi, BELUM teruji hardware.** ZKTeco &
    Solution (COM CZKEM: fetch log/user/provision/info) dan Hikvision
@@ -6,14 +6,15 @@
    (`vendor_sdk/`), tetapi butuh perangkat fisik untuk uji sebelum diklaim
    "supported". Tanpa DLL terdaftar + hardware, operasi mengembalikan error
    yang jelas (bukan data karangan). TIME TECH AC6 tetap stub `Unsupported`
-   (access controller Wiegand-only, tanpa SDK PC dari vendor).
+   (access controller Wiegand-only, tanpa SDK PC dari vendor). Status DLL
+   dapat dicek dari UI via `device_sdk_status`.
 2. **Adapter Hikvision belum bisa tarik log absensi.** Build HCNetSDK yang
    tersedia tidak mengekspos API event absensi terminal; butuh dokumen
-   ISAPI/ACS resmi + hardware. Status capability `Unsupported` (jujur).
+   ISAPI/ACS resmi + hardware. Status capability `Unsupported` (jujur, tampil di UI).
 3. **Lisensi redistribusi DLL belum terverifikasi** (ZKTeco/Solution gratis
    untuk customer; Hikvision resmi butuh akun). Aplikasi TIDAK membundel DLL;
    pengguna menyalin DLL ke folder exe/`%APPDATA%\AttendX\sdk` + registrasi
-   (lihat `vendor_sdk/README.md`).
+   (lihat `vendor_sdk/README.md` + `INSTALL_WINDOWS.md`).
 4. **Backup belum terenkripsi** di rest; kunci manajemen aman belum tersedia,
    maka klaim "terenkripsi" tidak dibuat.
 5. ~~Idle lock per-menit~~ → timeout sesi dapat dikonfigurasi (default 8 jam),

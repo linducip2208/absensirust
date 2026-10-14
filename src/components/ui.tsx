@@ -95,10 +95,18 @@ export const STATUS_COLOR: Record<string, string> = {
   Incomplete: 'orange', NeedsReview: 'pink', aktif: 'success', nonaktif: 'secondary',
   online: 'success', offline: 'secondary', error: 'danger',
   approved: 'success', pending: 'warning', rejected: 'danger',
+  Ya: 'success', Tidak: 'secondary', Siap: 'success', Belum: 'warning',
+};
+
+/** Label Indonesia untuk enum status backend (DB tetap menyimpan enum Inggris). */
+export const STATUS_LABEL: Record<string, string> = {
+  Present: 'Hadir', Late: 'Terlambat', Absent: 'Tidak hadir', Leave: 'Cuti',
+  Permission: 'Izin', Holiday: 'Libur', DayOff: 'Libur mingguan',
+  Incomplete: 'Belum lengkap', NeedsReview: 'Perlu review',
 };
 
 export function StatusBadge({ value }: { value: string | number | null }) {
   const v = String(value ?? '-');
   const color = STATUS_COLOR[v] ?? 'secondary';
-  return <span className={`badge bg-${color}-lt`}>{v}</span>;
+  return <span className={`badge bg-${color}-lt`}>{STATUS_LABEL[v] ?? v}</span>;
 }

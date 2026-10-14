@@ -15,7 +15,7 @@ const LEAVE: Column[] = [
   { key: 'start_date', label: 'Mulai', type: 'date', required: true },
   { key: 'end_date', label: 'Selesai', type: 'date', required: true },
   { key: 'reason', label: 'Alasan', type: 'textarea' },
-  { key: 'attachment_path', label: 'Lampiran', hideInTable: true },
+  { key: 'attachment_path', label: 'Lampiran (via unggah di bawah)', hideInTable: true, readOnly: true },
   { key: 'status', label: 'Status', type: 'select', badge: true, options: [{ value: 'pending', label: 'Menunggu' }, { value: 'approved', label: 'Disetujui' }, { value: 'rejected', label: 'Ditolak' }] },
   { key: 'approved_by', label: 'Disetujui oleh', readOnly: true },
 ];
@@ -121,6 +121,9 @@ function BalanceCard() {
           <table className="table card-table table-vcenter">
             <thead><tr><th>NIK</th><th>Nama</th><th>Jenis</th><th>Kuota</th><th>Terpakai</th><th>Sisa</th></tr></thead>
             <tbody>
+              {rows.length === 0 && (
+                <tr><td colSpan={6}><div className="text-secondary p-2">Belum ada saldo (tambah jenis cuti + karyawan dulu).</div></td></tr>
+              )}
               {rows.map((r, i) => (
                 <tr key={i} className={r.remaining < 0 ? 'table-danger' : ''}>
                   <td>{r.nik}</td><td>{r.name}</td><td>{r.leave_code}</td>

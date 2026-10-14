@@ -1,27 +1,47 @@
 import { useEffect, useState } from 'react';
-import { api, DeviceUser, RegistryEntry, Row, SyncStats } from '../api';
+import { api, DeviceUser, RegistryEntry, Row, SdkStatus, SyncStats } from '../api';
 import Crud, { Column } from '../components/Crud';
 import Layout from '../components/Layout';
-import { Field, LoadingState, StatusBadge, useToast } from '../components/ui';
+import { EmptyState, Field, LoadingState, StatusBadge, useToast } from '../components/ui';
+
+const ADAPTER_OPTIONS = [
+  { value: 'zkteco-terminal', label: 'zkteco-terminal (ZKTeco ZKEM)' },
+  { value: 'solution-terminal', label: 'solution-terminal (Solution ZKEM)' },
+  { value: 'hikvision-terminal', label: 'hikvision-terminal (HCNetSDK)' },
+  { value: 'timetech-ac6', label: 'timetech-ac6 (BLOCKED — tanpa SDK)' },
+  { value: 'mock-simulated', label: 'mock-simulated (SIMULATED, test saja)' },
+];
 
 const COLUMNS: Column[] = [
   { key: 'name', label: 'Nama', required: true },
   { key: 'vendor', label: 'Merek', required: true },
   { key: 'model', label: 'Model' },
-  { key: 'serial_number', label: 'Serial' },
-  { key: 'host', label: 'IP/Hostname' },
+  { key: 'serial_number', label: 'Serial', readOnly: true },
+  { key: 'host', label: 'IP/Hostname', required: true },
   { key: 'branch_id', label: 'Cabang ID' },
   { key: 'location', label: 'Lokasi' },
   { key: 'connection_type', label: 'Koneksi' },
-  { key: 'adapter_name', label: 'Adapter', required: true },
+  { key: 'adapter_name', label: 'Adapter', type: 'select', options: ADAPTER_OPTIONS, required: true },
+  {
+    key: 'config_json', label: 'Koneksi & kredensial (JSON)', type: 'textarea', hideInTable: true,
+  },
   { key: 'sdk_version', label: 'Versi SDK', readOnly: true },
   { key: 'status', label: 'Status', badge: true, readOnly: true },
   { key: 'last_sync_at', label: 'Sync terakhir', readOnly: true },
 ];
 
+const CONFIG_HINTS: Record<string, string> = {
+  'zkteco-terminal': '{"port":4370,"machine":1}',
+  'solution-terminal': '{"port":4370,"machine":1}',
+  'hikvision-terminal': '{"port":8000,"username":"admin","password":"..."}',
+  'timetech-ac6': '{}',
+  'mock-simulated': '{}',
+};
+
 export default function Devices() {
   const toast = useToast();
   const [registry, setRegistry] = useState<RegistryEntry[]>([]);
+  const [sdk, setSdk] = useState<SdkStatus[] | null>(null);
   const [testing, setTesting] = useState<string | null>(null);
   const [syncing, setSyncing] = useState<string | null>(null);
   const [lastStats, setLastStats] = useState<SyncStats | null>(null);
@@ -30,6 +50,7 @@ export default function Devices() {
 
   useEffect(() => {
     api.deviceRegistry().then(setRegistry).catch((e: Error) => toast.push('error', e.message));
+    api.deviceSdkStatus().then(setSdk).catch(() => setSdk([]));
   }, []);
 
   const test = async (id: string) => {
@@ -67,32 +88,72 @@ export default function Devices() {
     try {
       const res = await api.tableList('device_connection_log', 1, 30, '', 'created_at', 'desc');
       setLogs(res.rows);
+      if (res.rows.length === 0) toast.push('info', 'Belum ada riwayat koneksi.');
     } catch (e) {
       toast.push('error', e instanceof Error ? e.message : String(e));
     }
   };
 
+  const tested = registry.filter((r) => r.status.startsWith('TERSEDIA')).length;
+
   return (
     <Layout title="Perangkat" breadcrumb="Hardware & SDK">
-      <div className="alert alert-warning">
-        <strong>Status integrasi jujur:</strong> belum ada SDK vendor yang teruji pada hardware nyata.
-        Semua adapter vendor berstatus <em>BUTUH SDK/HARDWARE</em>. Adapter <em>mock-simulated</em> hanya untuk
+      <div className="alert alert-info">
+        <strong>Status integrasi:</strong> SDK vendor sudah diunduh & adapter nyata
+        diimplementasikan ({tested} adapter TERSEDIA: ZKTeco, Solution; Hikvision sebagian;
+        TIME TECH AC6 BLOCKED tanpa SDK). Uji hardware fisik masih diperlukan sebelum
+        klaim kompatibel — lihat kolom <em>Status uji</em>. Adapter <em>mock-simulated</em> hanya untuk
         pengujian dan selalu ditandai <span className="badge bg-pink-lt simulated-tag">SIMULATED</span>.
       </div>
       <div className="card mb-3">
         <div className="card-header"><h3 className="card-title">Registry adapter & SDK</h3></div>
         <div className="table-responsive">
           <table className="table card-table table-vcenter">
-            <thead><tr><th>Adapter</th><th>Vendor</th><th>Model</th><th>SDK</th><th>Status uji</th><th>Kekurangan</th></tr></thead>
+            <thead><tr><th>Adapter</th><th>Vendor</th><th>Model</th><th>SDK</th><th>Operasi</th><th>Status uji</th><th>Kekurangan</th></tr></thead>
             <tbody>
+              {registry.length === 0 && (
+                <tr><td colSpan={7}><EmptyState title="Memuat registry…" hint="" /></td></tr>
+              )}
               {registry.map((r) => (
                 <tr key={r.adapter_name}>
                   <td>{r.adapter_name}</td><td>{r.vendor}</td><td>{r.models.join(', ')}</td>
-                  <td>{r.sdk_version}</td><td>{r.status}</td><td>{r.missing}</td>
+                  <td>{r.sdk_version}</td><td>{r.supported_ops.join(', ') || '—'}</td>
+                  <td>{r.status}</td><td>{r.missing}</td>
                 </tr>
               ))}
             </tbody>
           </table>
+        </div>
+      </div>
+      <div className="card mb-3">
+        <div className="card-header"><h3 className="card-title">DLL vendor di mesin ini</h3></div>
+        <div className="table-responsive">
+          <table className="table card-table table-vcenter">
+            <thead><tr><th>Adapter</th><th>DLL</th><th>Ditemukan</th><th>Arsitektur</th><th>Siap</th><th>Keterangan</th></tr></thead>
+            <tbody>
+              {sdk === null && (
+                <tr><td colSpan={6}><EmptyState title="Memeriksa DLL…" hint="" /></td></tr>
+              )}
+              {(sdk ?? []).map((s) => {
+                const ready = s.found && s.arch === 'x64' && (s.registered || s.loadable);
+                return (
+                  <tr key={s.dll}>
+                    <td>{s.adapter}</td><td>{s.dll}</td>
+                    <td><StatusBadge value={s.found ? 'Ya' : 'Tidak'} /></td>
+                    <td>{s.arch || '—'}</td>
+                    <td><StatusBadge value={ready ? 'Siap' : 'Belum'} /></td>
+                    <td className="text-secondary">{s.found ? s.path : s.hint}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <div className="card-footer text-secondary">
+          Taruh DLL di folder exe, <code>exe/sdk</code>, atau <code>%APPDATA%\AttendX\sdk</code>.
+          ZKTeco/Solution butuh registrasi sekali (Administrator): <code>regsvr32 zkemkeeper.dll</code>.
+          Format <code>config_json</code> per adapter: ZK/Solution <code>{String(CONFIG_HINTS['zkteco-terminal'])}</code>,
+          Hikvision <code>{String(CONFIG_HINTS['hikvision-terminal'])}</code> (jangan tulis password di log).
         </div>
       </div>
       <div key={refreshKey}>
@@ -153,8 +214,9 @@ function DeviceUsers() {
     }
     setBusy(true);
     try {
-      setUsers(await api.deviceFetchUsers(sel));
-      if (users.length === 0) toast.push('info', 'Perangkat tidak melaporkan user (atau capability Unsupported pada SDK nyata)');
+      const fetched = await api.deviceFetchUsers(sel);
+      setUsers(fetched);
+      if (fetched.length === 0) toast.push('info', 'Perangkat tidak melaporkan user (atau capability Unsupported pada SDK nyata)');
     } catch (e) {
       toast.push('error', e instanceof Error ? e.message : String(e));
     } finally {

@@ -5,7 +5,7 @@ import { ConfirmDialog, EmptyState, Field, LoadingState, StatusBadge, useToast }
 export interface Column {
   key: string;
   label: string;
-  type?: 'text' | 'number' | 'date' | 'datetime' | 'select' | 'textarea' | 'hidden';
+  type?: 'text' | 'number' | 'date' | 'datetime' | 'select' | 'textarea' | 'hidden' | 'password';
   options?: { value: string; label: string }[];
   required?: boolean;
   readOnly?: boolean;
@@ -244,7 +244,8 @@ export default function Crud({
                         ) : (
                           <input
                             className={`form-control${errors[c.key] ? ' is-invalid' : ''}`}
-                            type={c.type === 'number' ? 'number' : c.type === 'date' ? 'date' : c.type === 'datetime' ? 'datetime-local' : 'text'}
+                            type={c.type === 'number' ? 'number' : c.type === 'date' ? 'date' : c.type === 'datetime' ? 'datetime-local' : c.type === 'password' ? 'password' : 'text'}
+                            autoComplete={c.type === 'password' ? 'new-password' : undefined}
                             value={form[c.key] ?? ''}
                             disabled={c.readOnly && !isNew}
                             onChange={(e) => setForm((f) => ({ ...f, [c.key]: e.target.value }))}

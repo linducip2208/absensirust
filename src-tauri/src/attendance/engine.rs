@@ -712,4 +712,51 @@ mod tests {
         let o = compute_day(&i);
         assert_eq!((o.work_minutes + o.break_minutes) % 15, 0);
     }
+    #[test]
+    fn pulang_saja_tanpa_clockin_incomplete() {
+        let o = compute_day(&base(
+            pagi(),
+            "2026-05-04",
+            None,
+            Some("2026-05-04 15:00:00"),
+        ));
+        assert_eq!(o.status, AttendanceStatus::Incomplete);
+        assert!(o.anomaly.contains("tidak lengkap"));
+    }
+    #[test]
+    fn scan_ganda_menandai_anomali() {
+        let mut i = base(
+            pagi(),
+            "2026-05-04",
+            Some("2026-05-04 07:00:00"),
+            Some("2026-05-04 15:00:00"),
+        );
+        i.events.duplicate_count = 2;
+        let o = compute_day(&i);
+        assert_eq!(o.status, AttendanceStatus::Present);
+        assert!(o.anomaly.contains("ganda x3"));
+    }
+    #[test]
+    fn clockout_sebelum_clockin_non_malam_perlu_review() {
+        let o = compute_day(&base(
+            pagi(),
+            "2026-05-04",
+            Some("2026-05-04 10:00:00"),
+            Some("2026-05-04 09:00:00"),
+        ));
+        assert_eq!(o.status, AttendanceStatus::NeedsReview);
+    }
+    #[test]
+    fn libur_dengan_event_tetap_dihitung() {
+        let mut i = base(
+            pagi(),
+            "2026-05-04",
+            Some("2026-05-04 07:00:00"),
+            Some("2026-05-04 15:00:00"),
+        );
+        i.is_holiday = true;
+        let o = compute_day(&i);
+        assert_eq!(o.status, AttendanceStatus::Present);
+        assert!(o.work_minutes > 0);
+    }
 }

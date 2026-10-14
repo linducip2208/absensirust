@@ -84,7 +84,9 @@ docs/                12 dokumen (lihat daftar di bawah)
 
 ## Status penerimaan
 
-Semua kriteria yang dapat diverifikasi pada lingkungan ini **lulus** (build Tauri Windows,
-migrasi, CRUD, shift malam teruji, engine, mock adapter, backup/restore, tanpa kredensial default).
+Semua kriteria yang dapat diverifikasi pada lingkungan ini **lulus** (build 5:
+65 test Rust + 3 test frontend, fmt/clippy/eslint/tsc bersih, installer NSIS
+terbentuk, smoke test exe + migrasi + integritas DB ok).
 Lihat `docs/TEST_REPORT.md` dan `docs/KNOWN_LIMITATIONS.md` untuk status BLOCKED
-(pengujian SDK nyata — membutuhkan file SDK vendor + perangkat fisik).
+(pengujian hardware SDK nyata — membutuhkan DLL terdaftar + perangkat fisik;
+cek kesiapan DLL dari UI via Devices → DLL vendor di mesin ini).

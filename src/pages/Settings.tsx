@@ -63,6 +63,17 @@ export default function Settings() {
     }
   };
 
+  const setAndSave = async (key: string, val: string) => {
+    setValues((v) => ({ ...v, [key]: val }));
+    try {
+      await api.settingsSet(key, val);
+      toast.push('success', `Pengaturan ${key}=${val} tersimpan`);
+      await load();
+    } catch (e) {
+      toast.push('error', e instanceof Error ? e.message : String(e));
+    }
+  };
+
   const toggleScheduler = async (enabled: boolean) => {
     setBusy(true);
     try {
@@ -138,11 +149,10 @@ export default function Settings() {
                   sekali sehari (rotasi mengikuti jumlah di atas).
                 </div>
                 <div className="btn-list">
-                  <button className="btn btn-outline-primary" onClick={() => { setValues((v) => ({ ...v, backup_auto: '1' })); }}>Aktifkan (1)</button>
-                  <button className="btn btn-outline-secondary" onClick={() => { setValues((v) => ({ ...v, backup_auto: '0' })); }}>Matikan (0)</button>
-                  <button className="btn btn-primary" onClick={() => save('backup_auto')}>
-                    Simpan (saat ini: {values.backup_auto ?? '?'})
+                  <button className="btn btn-outline-primary" onClick={() => setAndSave('backup_auto', '1')}>
+                    Aktifkan (saat ini: {values.backup_auto ?? '?'})
                   </button>
+                  <button className="btn btn-outline-secondary" onClick={() => setAndSave('backup_auto', '0')}>Matikan</button>
                 </div>
               </div>
             </div>

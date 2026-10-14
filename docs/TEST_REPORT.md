@@ -1,4 +1,53 @@
-# Laporan Pengujian (hasil aktual — build 4: 2026-10-14, Windows 11 x64)
+# Laporan Pengujian (hasil aktual — build 5 finalisasi: 2026-10-14, Windows 11 x64)
+
+## 0. Build 5 — finalisasi total (semua perintah benar-benar dijalankan)
+
+| Perintah | Hasil |
+|---|---|
+| `npx tsc --noEmit` | **LULUS** |
+| `npx eslint "src/**/*.ts" "src/**/*.tsx" --max-warnings 0` | **LULUS** (0 warning) |
+| `npx vitest run` | **LULUS — 3/3** |
+| `npm run build` | **LULUS** → `dist/` |
+| `cargo fmt --all --check` | **LULUS** (0 diff) |
+| `cargo clippy --all-targets --all-features -- -D warnings` | **LULUS** (0 warning) |
+| `cargo test` | **LULUS — 65/65 lib**, 0 gagal, 4 `#[ignore]` (gerbang hardware) |
+| `cargo check --all-targets` | LULUS (via clippy/build) |
+| `npx tauri build` (NSIS) | **LULUS** — exe 14,33 MB + `AttendX Rust_1.0.0_x64-setup.exe` 3,47 MB |
+| Smoke test exe 15 dtk | **LULUS** — proses hidup, `integrity_check = ok`, 26 tabel, shift seed = 3, users = 0 (tanpa kredensial default) |
+| Validasi PDF via pypdf | **LULUS** — 120 baris → 3 halaman, xref utuh, header berulang, nomor halaman, ringkasan |
+
+### Bug nyata yang ditemukan & diperbaiki (build 5)
+
+1. **KRITIS — form setup/login tertukar**: `hasAdmin().then(setNeedsSetup)` terbalik
+   (`src/pages/Login.tsx`) + argumen IPC `displayName` vs `display_name`
+   (`src/api.ts`) → admin pertama tak bisa dibuat dari UI. Keduanya diperbaiki.
+2. **Kebocoran `password_hash`** via `table_list`/`table_get` users (komentar
+   mengklaim disembunyikan, kode tidak) → kini di-strip di backend.
+3. **Ganti password tidak berfungsi** (`table_update` mengabaikan `password`)
+   → kini di-hash Argon2 bila diisi (super_admin saja, role divalidasi).
+4. **FK violation `swap_request`** tanpa assignment cocok (`''` vs NULL)
+   → kini NULL; tambah 3 test swap + 1 test overlap (helper
+   `find_shift_overlaps` / `apply_swap_decision` yang dipakai command).
+5. Laporan: filter cabang/departemen/shift tak ada input (selalu '') →
+   dropdown terisi dari DB; status → select enum Inggris + label Indonesia;
+   tombol ekspor anti double-submit.
+6. Devices: banner basi → status akurat + tabel DLL (`device_sdk_status`,
+   command backend build 4 yang belum ada UI-nya) + kolom `config_json` +
+   adapter select + perbaiki stale-state `fetchUsers`.
+7. Attendance: nama karyawan (bukan ID), empty state, guard double-submit koreksi.
+8. Schedule: `confirm()` native → `ConfirmDialog`, nama (bukan ID) di swap,
+   empty states. Dashboard: error state + retry (sebelumnya loading selamanya).
+   Leaves: lampiran readOnly (via unggah). Users: kolom password di-mask.
+   Settings: Aktifkan/Matikan backup langsung tersimpan.
+9. PDF ditulis ulang: multi-halaman A4, header berulang, nomor halaman,
+   ringkasan, transliterasi ASCII (xref aman) — teruji + tervalidasi pypdf.
+10. Engine +4 test: pulang-saja, scan ganda, co-sebelum-ci non-malam, libur ber-event.
+
+### 16 → 27 test baru (build 3→5)
+
+Build 3: 12 (COM/parse/record/PE/VARIANT/checkpoint/Hikvision/Solution/Timetech).
+Build 4: +2 (`sdk_status_shape` zkcom/hikvision).
+Build 5: +4 engine, +3 swap/overlap, +4 PDF/wrap (total lib 65; frontend 3).
 
 ## 0. Build 4 — SDK bisa diunduh & ditaruh (skrip + status)
 
