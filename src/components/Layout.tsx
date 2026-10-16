@@ -150,7 +150,8 @@ function GlobalSearch() {
                 className="list-group-item list-group-item-action"
                 onMouseDown={() => {
                   setOpen(false);
-                  nav(r.kind === 'karyawan' ? '/karyawan' : '/perangkat');
+                  const to = r.kind === 'karyawan' ? '/karyawan' : '/perangkat';
+                  nav(to, { state: { q } });
                 }}
               >
                 <span className="badge bg-secondary-lt me-2">{r.kind}</span>

@@ -3040,17 +3040,46 @@ pub mod commands {
         csv_text: String,
     ) -> Result<serde_json::Value, AppError> {
         require(&state, &token, "shift.manage")?;
+        let (rows, errors) = schedule_preview_rows(&state.repo, &csv_text)?;
+        Ok(serde_json::json!({"rows": rows, "errors": errors}))
+    }
+
+    /// Inti preview impor jadwal (murni DB, tanpa auth) agar dapat diuji.
+    fn schedule_preview_rows(
+        repo: &Repo,
+        csv_text: &str,
+    ) -> AppResult<(Vec<serde_json::Value>, Vec<String>)> {
         let mut rdr = csv::Reader::from_reader(csv_text.as_bytes());
         let mut rows = vec![];
         let mut errors = vec![];
         // Toleran: boleh dengan atau tanpa baris header. Bila baris pertama
         // justru berisi data (kolom tanggal valid), perlakukan sebagai data.
+        // Bila header ada (mis. hasil ekspor: nik,nama,shift,efektif,akhir),
+        // kolom dipetakan BY NAMA sehingga roundtrip ekspor→impor berfungsi.
         let mut records: Vec<Vec<String>> = vec![];
         let headers: Vec<String> = rdr
             .headers()
             .map(|h| h.iter().map(|x| x.to_string()).collect())
             .unwrap_or_default();
-        if headers.len() >= 3
+        // Indeks kolom: default urutan nik,shift,efektif,akhir.
+        let mut col = [0usize, 1, 2, 3];
+        let lower: Vec<String> =
+            headers.iter().map(|h| h.trim().to_lowercase()).collect();
+        let has_header = lower.iter().any(|h| {
+            ["nik", "shift", "efektif", "akhir", "nama"].contains(&h.as_str())
+        });
+        if has_header {
+            for (slot, names) in [
+                (0usize, ["nik"].as_slice()),
+                (1usize, ["shift", "kode shift", "kode"].as_slice()),
+                (2usize, ["efektif", "tgl efektif", "mulai", "dari"].as_slice()),
+                (3usize, ["akhir", "tgl akhir", "selesai", "sampai"].as_slice()),
+            ] {
+                if let Some(pos) = names.iter().find_map(|n| lower.iter().position(|h| h == n)) {
+                    col[slot] = pos;
+                }
+            }
+        } else if headers.len() >= 3
             && parse_date(headers[2].trim()).is_ok()
             && !headers[0].trim().eq_ignore_ascii_case("nik")
         {
@@ -3065,10 +3094,9 @@ pub mod commands {
         for (i, rec) in records.into_iter().enumerate() {
             let line = i + 2;
             let g = |n: usize| rec.get(n).map(|x| x.trim().to_string()).unwrap_or_default();
-            let (nik, code, eff, end) = (g(0), g(1), g(2), g(3));
+            let (nik, code, eff, end) = (g(col[0]), g(col[1]), g(col[2]), g(col[3]));
             let mut errs = vec![];
-            let emp: Option<String> = state
-                .repo
+            let emp: Option<String> = repo
                 .query_one("SELECT id FROM employees WHERE nik=?1", &[&nik], |r| {
                     r.get(0)
                 })
@@ -3076,8 +3104,7 @@ pub mod commands {
             if emp.is_none() {
                 errs.push(format!("nik {nik} tidak dikenal"));
             }
-            let sh: Option<String> = state
-                .repo
+            let sh: Option<String> = repo
                 .query_one("SELECT id FROM shifts WHERE code=?1", &[&code], |r| {
                     r.get(0)
                 })
@@ -3102,7 +3129,7 @@ pub mod commands {
                 "employee_id": emp, "shift_id": sh, "errors": errs,
             }));
         }
-        Ok(serde_json::json!({"rows": rows, "errors": errors}))
+        Ok((rows, errors))
     }
 
     #[tauri::command]
@@ -3589,8 +3616,7 @@ pub mod commands {
         }
 
         #[test]
-        fn table_columns_have_no_duplicate_tables() {
-            let mut seen = std::collections::HashSet::new();
+        fn table_columns_have_no_duplicate_tables() {            let mut seen = std::collections::HashSet::new();
             for (name, _) in TABLE_COLUMNS {
                 assert!(seen.insert(*name), "duplikat: {name}");
             }
@@ -3620,6 +3646,51 @@ pub mod commands {
             ] {
                 assert!(columns_of(t).is_ok(), "hilang: {t}");
             }
+        }
+
+        fn seed_emp_for_import(st: &AppState) {
+            st.repo
+                .exec(
+                    "INSERT INTO employees (id, nik, name, hire_date, status, created_at, updated_at)
+                     VALUES ('ei','N10','Impor','2024-01-01','aktif','2026-01-01 00:00:00','2026-01-01 00:00:00')",
+                    &[],
+                )
+                .unwrap();
+        }
+
+        #[test]
+        fn schedule_preview_maps_header_names_roundtrip() {
+            let st = test_state();
+            seed_emp_for_import(&st);
+            // Format persis hasil schedule_export (nik,nama,shift,efektif,akhir).
+            let csv = "nik,nama,shift,efektif,akhir\nN10,Budi,PAGI,2026-11-02,2026-11-08\n";
+            let (rows, errors) = schedule_preview_rows(&st.repo, csv).unwrap();
+            assert!(errors.is_empty(), "{errors:?}");
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0]["shift"], serde_json::json!("PAGI"));
+            assert_eq!(rows[0]["eff"], serde_json::json!("2026-11-02"));
+            assert!(rows[0]["employee_id"].as_str().is_some());
+            assert!(rows[0]["shift_id"].as_str().is_some());
+        }
+
+        #[test]
+        fn schedule_preview_positional_without_header() {
+            let st = test_state();
+            seed_emp_for_import(&st);
+            let csv = "N10,PAGI,2026-11-02,\n";
+            let (rows, errors) = schedule_preview_rows(&st.repo, csv).unwrap();
+            assert!(errors.is_empty(), "{errors:?}");
+            assert_eq!(rows[0]["shift"], serde_json::json!("PAGI"));
+            assert_eq!(rows[0]["end"], serde_json::json!(""));
+        }
+
+        #[test]
+        fn schedule_preview_rejects_bad_end() {
+            let st = test_state();
+            seed_emp_for_import(&st);
+            let csv = "nik,shift,efektif,akhir\nN10,PAGI,2026-11-08,2026-11-02\n";
+            let (_, errors) = schedule_preview_rows(&st.repo, csv).unwrap();
+            assert!(errors.iter().any(|e| e.contains("sebelum efektif")), "{errors:?}");
         }
     }
 

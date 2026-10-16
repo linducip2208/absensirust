@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { api, DeviceUser, RegistryEntry, Row, SdkStatus, SyncStats } from '../api';
 import Crud, { Column } from '../components/Crud';
 import Layout from '../components/Layout';
@@ -40,6 +41,8 @@ const CONFIG_HINTS: Record<string, string> = {
 
 export default function Devices() {
   const toast = useToast();
+  const loc = useLocation() as { state?: { q?: string } };
+  const fromSearch = loc.state?.q ?? '';
   const [registry, setRegistry] = useState<RegistryEntry[]>([]);
   const [sdk, setSdk] = useState<SdkStatus[] | null>(null);
   const [testing, setTesting] = useState<string | null>(null);
@@ -157,7 +160,7 @@ export default function Devices() {
         </div>
       </div>
       <div key={refreshKey}>
-        <Crud table="devices" title="Perangkat" columns={COLUMNS} orderBy="name" />
+        <Crud table="devices" title="Perangkat" columns={COLUMNS} orderBy="name" initialSearch={fromSearch} />
       </div>
       <div className="card mt-3">
         <div className="card-header"><h3 className="card-title">Uji & sinkronisasi cepat</h3></div>

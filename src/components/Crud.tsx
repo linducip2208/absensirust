@@ -14,17 +14,17 @@ export interface Column {
 }
 
 export default function Crud({
-  table, title, columns, orderBy, canWrite = true, allowHardDelete = false,
+  table, title, columns, orderBy, canWrite = true, allowHardDelete = false, initialSearch = '',
 }: {
   table: string; title: string; columns: Column[]; orderBy?: string;
-  canWrite?: boolean; allowHardDelete?: boolean;
+  canWrite?: boolean; allowHardDelete?: boolean; initialSearch?: string;
 }) {
   const toast = useToast();
   const [rows, setRows] = useState<Row[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
-  const [search, setSearch] = useState('');
-  const [searchInput, setSearchInput] = useState('');
+  const [search, setSearch] = useState(initialSearch);
+  const [searchInput, setSearchInput] = useState(initialSearch);
   const [order, setOrder] = useState(orderBy ?? '');
   const [dir, setDir] = useState<'asc' | 'desc'>('asc');
   const [loading, setLoading] = useState(true);

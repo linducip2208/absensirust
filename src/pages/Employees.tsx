@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { api, downloadFile, getUser, pickFile, Row } from '../api';
 import Crud, { Column } from '../components/Crud';
 import Layout from '../components/Layout';
@@ -27,6 +28,8 @@ const MAP_COLUMNS: Column[] = [
 
 export default function Employees() {
   const toast = useToast();
+  const loc = useLocation() as { state?: { q?: string } };
+  const fromSearch = loc.state?.q ?? '';
   const role = getUser()?.role ?? '';
   const canWrite = ['super_admin', 'hr_admin'].includes(role);
   const [tab, setTab] = useState<'data' | 'map' | 'import'>('data');
@@ -85,7 +88,7 @@ export default function Employees() {
         {canWrite && <button className={`btn ${tab === 'import' ? 'btn-primary' : ''}`} onClick={() => setTab('import')}>Impor CSV</button>}
         <button className="btn btn-outline-primary" onClick={exportCsv}>Ekspor CSV</button>
       </div>
-      {tab === 'data' && <Crud table="employees" title="Karyawan" columns={COLUMNS} orderBy="name" canWrite={canWrite} allowHardDelete />}
+      {tab === 'data' && <Crud table="employees" title="Karyawan" columns={COLUMNS} orderBy="name" canWrite={canWrite} allowHardDelete initialSearch={fromSearch} />}
       {tab === 'data' && canWrite && <PhotoCard />}
       {tab === 'map' && (
         <Crud table="employee_device_map" title="Mapping Karyawan–Device" columns={MAP_COLUMNS} canWrite={canWrite} />

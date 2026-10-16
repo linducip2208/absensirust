@@ -1,5 +1,5 @@
 AttendX Rust
-Versi aplikasi : 1.0.0 (build 6, 2026-10-14)
+Versi aplikasi : 1.0.0 (build 7, 2026-10-14)
 Versi database : 7 (migrasi v1-v7, kompatibel mundur — data lama tidak hilang)
 Target         : Windows 10/11 x64
 Zona waktu     : Asia/Jakarta (WIB)
@@ -9,9 +9,9 @@ Biner:
 - AttendX-Rust.exe (portable, 14,38 MB)
 - Installer\AttendX Rust_1.0.0_x64-setup.exe (NSIS, 3,48 MB)
 
-Verifikasi build 6:
+Verifikasi build 7:
 - tsc + eslint + vitest 9/9 + npm build: LULUS
-- cargo fmt + clippy + cargo test 70/70 (+4 hardware di-ignore): LULUS
+- cargo fmt + clippy + cargo test 73/73 (+4 hardware di-ignore): LULUS
 - Smoke test: integrity_check ok, 26 tabel, tanpa kredensial default
 - PDF laporan multi-halaman tervalidasi
 

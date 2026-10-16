@@ -1,4 +1,25 @@
-# Laporan Pengujian (hasil aktual — build 6: 2026-10-14, Windows 11 x64)
+# Laporan Pengujian (hasil aktual — build 7: 2026-10-14, Windows 11 x64)
+
+## 0. Build 7 — kelengkapan putaran akhir (roundtrip + search + panduan)
+
+| Perintah | Hasil |
+|---|---|
+| `npx tsc --noEmit` / `eslint` / `vitest run` | **LULUS** — 9/9 |
+| `npm run build` + `npx tauri build` (NSIS) | **LULUS** — exe 14,38 MB + setup 3,48 MB |
+| `cargo fmt` / `clippy -D warnings` / `cargo test` | **LULUS — 73/73 lib**, 4 `#[ignore]` hardware |
+| Smoke test 15 dtk + DB | **LULUS** — integrity ok, 26 tabel |
+
+### Temuan & perbaikan (build 7)
+
+1. **Roundtrip ekspor→impor jadwal rusak**: ekspor menulis
+   `nik,nama,shift,efektif,akhir` tetapi impor membaca posisi tetap
+   (kolom `nama` dibaca sebagai kode shift → semua baris gagal). Kini kolom
+   dipetakan **by nama header** (alias id/en didukung) + fallback posisional
+   tanpa header; logika preview diekstrak agar teruji (+3 test).
+2. **Pencarian global kehilangan konteks**: klik hasil hanya pindah menu.
+   Kini query dibawa via state ke Karyawan/Perangkat (`Crud.initialSearch`).
+3. **USER_GUIDE**: shift malam (tanggal kerja asal), tanggal akhir,
+   salin minggu, PDF multi-halaman, roundtrip impor jadwal.
 
 ## 0. Build 6 — aplikasi berjalan lengkap (kontrak IPC + keamanan + distribusi)
 

@@ -39,6 +39,11 @@ Semua jam yang tampil adalah **WIB (Asia/Jakarta)**.
   Untuk rotasi, buat baris baru dengan tanggal efektif berikutnya — jangan ubah
   baris lama (agar histori periode lalu utuh).
 - Aturan shift berversi (`version`); hasil hitung mencatat versi yang dipakai.
+- **Shift malam**: tanggal kerja = tanggal mulai (mis. lembur 23:00–07:00
+  milik tanggal asal meski pulang keesokan harinya). Jam tak valid
+  (mis. 25:00) ditolak saat simpan.
+- **Tanggal akhir**: kosongkan untuk "berlaku terus"; isi untuk menutup
+  penugasan (rotasi rapi tanpa bentrok).
 
 ## 5b. Jadwal & Kalender (menu Jadwal & Kalender)
 
@@ -47,8 +52,9 @@ Semua jam yang tampil adalah **WIB (Asia/Jakarta)**.
 - **Penugasan massal**: pilih shift + rentang tanggal + banyak karyawan →
   *Pratinjau dampak* dulu (menampilkan yang akan dibuat vs dilewati karena
   bentrok) → *Simpan penugasan*.
-- **Salin minggu**: salin seluruh penugasan minggu tampil ke minggu tujuan
-  (dengan pratinjau; duplikat persis dilewati).
+- **Salin minggu**: salin penugasan yang MULAI pada minggu tampil ke minggu
+  tujuan (maju/mundur; dengan pratinjau; yang bentrok dilewati).
+  Penugasan panjang yang sudah mencakup minggu tujuan tak perlu disalin.
 - **Deteksi**: daftar shift tumpang tindih per karyawan + daftar hari kosong
   tanpa jadwal pada rentang tampil.
 - **Tukar shift**: ajukan (karyawan, dari → ke, tanggal, alasan wajib) →
@@ -93,7 +99,11 @@ Semua jam yang tampil adalah **WIB (Asia/Jakarta)**.
 
 - Pilih jenis → filter tanggal/cabang/departemen/shift/status/karyawan →
   **Tampilkan** → **Ekspor CSV/XLSX/PDF** (header jelas, tanggal WIB).
+  PDF multi-halaman A4 (header berulang, nomor halaman, ringkasan).
 - Jenis *rekon* membandingkan raw log vs hasil untuk audit.
+- **Impor jadwal CSV** menerima header (`nik,nama,shift,efektif,akhir`) atau
+  tanpa header (urutan `nik,shift,efektif,akhir`) — hasil *Ekspor CSV*
+  bisa langsung diimpor kembali.
 
 ## 10. Kalender & Libur
 
