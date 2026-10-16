@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, Row, todayWIB } from '../api';
 import Layout from '../components/Layout';
-import { EmptyState, Field, LoadingState, StatusBadge, useToast } from '../components/ui';
+import { ConfirmDialog, EmptyState, Field, LoadingState, StatusBadge, useToast } from '../components/ui';
 
 export default function Attendance() {
   const toast = useToast();
@@ -13,6 +13,7 @@ export default function Attendance() {
   const [results, setResults] = useState<Row[]>([]);
   const [names, setNames] = useState<Record<string, string>>({});
   const [correcting, setCorrecting] = useState<Row | null>(null);
+  const [confirmRequeue, setConfirmRequeue] = useState(false);
   const [newValue, setNewValue] = useState('');
   const [reason, setReason] = useState('');
   const [correctField, setCorrectField] = useState('clock_in');
@@ -47,6 +48,17 @@ export default function Attendance() {
       toast.push('error', e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const doRequeue = async () => {
+    setConfirmRequeue(false);
+    try {
+      const r = await api.eventsRequeue(date, date);
+      toast.push('success', `${r.requeued} event dikembalikan ke antrean`);
+      await load();
+    } catch (e) {
+      toast.push('error', e instanceof Error ? e.message : String(e));
     }
   };
 
@@ -86,19 +98,19 @@ export default function Attendance() {
             className="btn btn-outline-secondary"
             disabled={busy}
             title="Kembalikan event yang sudah diproses ke antrean (untuk dihitung ulang)"
-            onClick={async () => {
-              if (!confirm(`Kembalikan event ${date} ke antrean untuk dihitung ulang?`)) return;
-              try {
-                const r = await api.eventsRequeue(date, date);
-                toast.push('success', `${r.requeued} event dikembalikan ke antrean`);
-                await load();
-              } catch (e) {
-                toast.push('error', e instanceof Error ? e.message : String(e));
-              }
-            }}
+            onClick={() => setConfirmRequeue(true)}
           >
             Kembalikan ke antrean
           </button>
+          {confirmRequeue && (
+            <ConfirmDialog
+              title="Kembalikan ke antrean?"
+              body={`Kembalikan event ${date} yang sudah diproses ke antrean untuk dihitung ulang?`}
+              confirmLabel="Ya, kembalikan"
+              onCancel={() => setConfirmRequeue(false)}
+              onConfirm={doRequeue}
+            />
+          )}
           <span className="text-secondary">
             Mesin hitung memproses raw event perangkat (tidak mengubah event asli). Shift malam 23:00–07:00
             dikaitkan ke tanggal kerja asal.

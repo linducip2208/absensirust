@@ -51,16 +51,26 @@ pub mod commands {
         uuid::Uuid::new_v4().to_string()
     }
 
-    fn shift_from_value(v: &serde_json::Value) -> attendance::ShiftRule {
-        attendance::ShiftRule::from_row(
+    fn shift_from_value(v: &serde_json::Value) -> AppResult<attendance::ShiftRule> {
+        let start = v
+            .get("start_time")
+            .and_then(|x| x.as_str())
+            .unwrap_or("07:00");
+        let end = v
+            .get("end_time")
+            .and_then(|x| x.as_str())
+            .unwrap_or("15:00");
+        // Data lama yang korup tak boleh membuat mesin hitung panic.
+        if !attendance::valid_hm(start) || !attendance::valid_hm(end) {
+            return Err(AppError::Validation(format!(
+                "jam shift rusak di database ({start}–{end}); perbaiki via menu Shift"
+            )));
+        }
+        Ok(attendance::ShiftRule::from_row(
             v.get("code").and_then(|x| x.as_str()).unwrap_or(""),
             v.get("name").and_then(|x| x.as_str()).unwrap_or(""),
-            v.get("start_time")
-                .and_then(|x| x.as_str())
-                .unwrap_or("07:00"),
-            v.get("end_time")
-                .and_then(|x| x.as_str())
-                .unwrap_or("15:00"),
+            start,
+            end,
             v.get("crosses_midnight")
                 .and_then(|x| x.as_i64())
                 .unwrap_or(0),
@@ -89,7 +99,7 @@ pub mod commands {
                 .and_then(|x| x.as_str())
                 .unwrap_or("1,2,3,4,5"),
             v.get("version").and_then(|x| x.as_i64()).unwrap_or(1),
-        )
+        ))
     }
 
     // ---------- auth ----------
@@ -1165,6 +1175,7 @@ pub mod commands {
         })),
     )?;
         v.map(|x| shift_from_value(&x))
+            .transpose()?
             .ok_or_else(|| AppError::NotFound("shift".into()))
     }
 
@@ -3063,17 +3074,22 @@ pub mod commands {
             .unwrap_or_default();
         // Indeks kolom: default urutan nik,shift,efektif,akhir.
         let mut col = [0usize, 1, 2, 3];
-        let lower: Vec<String> =
-            headers.iter().map(|h| h.trim().to_lowercase()).collect();
-        let has_header = lower.iter().any(|h| {
-            ["nik", "shift", "efektif", "akhir", "nama"].contains(&h.as_str())
-        });
+        let lower: Vec<String> = headers.iter().map(|h| h.trim().to_lowercase()).collect();
+        let has_header = lower
+            .iter()
+            .any(|h| ["nik", "shift", "efektif", "akhir", "nama"].contains(&h.as_str()));
         if has_header {
             for (slot, names) in [
                 (0usize, ["nik"].as_slice()),
                 (1usize, ["shift", "kode shift", "kode"].as_slice()),
-                (2usize, ["efektif", "tgl efektif", "mulai", "dari"].as_slice()),
-                (3usize, ["akhir", "tgl akhir", "selesai", "sampai"].as_slice()),
+                (
+                    2usize,
+                    ["efektif", "tgl efektif", "mulai", "dari"].as_slice(),
+                ),
+                (
+                    3usize,
+                    ["akhir", "tgl akhir", "selesai", "sampai"].as_slice(),
+                ),
             ] {
                 if let Some(pos) = names.iter().find_map(|n| lower.iter().position(|h| h == n)) {
                     col[slot] = pos;
@@ -3616,7 +3632,8 @@ pub mod commands {
         }
 
         #[test]
-        fn table_columns_have_no_duplicate_tables() {            let mut seen = std::collections::HashSet::new();
+        fn table_columns_have_no_duplicate_tables() {
+            let mut seen = std::collections::HashSet::new();
             for (name, _) in TABLE_COLUMNS {
                 assert!(seen.insert(*name), "duplikat: {name}");
             }
@@ -3690,7 +3707,39 @@ pub mod commands {
             seed_emp_for_import(&st);
             let csv = "nik,shift,efektif,akhir\nN10,PAGI,2026-11-08,2026-11-02\n";
             let (_, errors) = schedule_preview_rows(&st.repo, csv).unwrap();
-            assert!(errors.iter().any(|e| e.contains("sebelum efektif")), "{errors:?}");
+            assert!(
+                errors.iter().any(|e| e.contains("sebelum efektif")),
+                "{errors:?}"
+            );
+        }
+
+        #[test]
+        fn corrupt_shift_hours_rejected_not_panicking() {
+            let bad = serde_json::json!({"code": "X", "start_time": "25:00", "end_time": "15:00"});
+            assert!(shift_from_value(&bad).is_err());
+            let bad2 = serde_json::json!({"code": "X", "start_time": "07:00", "end_time": "ab"});
+            assert!(shift_from_value(&bad2).is_err());
+            // Data seed valid tetap lolos.
+            let st = test_state();
+            let row: Option<serde_json::Value> = st
+                .repo
+                .query_one(
+                    "SELECT code, name, start_time, end_time, crosses_midnight, break_minutes, late_tolerance_minutes, clockin_early_limit_minutes, clockin_late_limit_minutes, clockout_limit_minutes, overtime_before_minutes, overtime_after_minutes, applicable_days, version FROM shifts WHERE id='sh-malam'",
+                    &[],
+                    |r| {
+                        Ok(serde_json::json!({
+                            "code": r.get::<_, String>(0)?, "name": r.get::<_, String>(1)?,
+                            "start_time": r.get::<_, String>(2)?, "end_time": r.get::<_, String>(3)?,
+                            "crosses_midnight": r.get::<_, i64>(4)?, "break_minutes": r.get::<_, i64>(5)?,
+                            "late_tolerance_minutes": r.get::<_, i64>(6)?, "clockin_early_limit_minutes": r.get::<_, i64>(7)?,
+                            "clockin_late_limit_minutes": r.get::<_, i64>(8)?, "clockout_limit_minutes": r.get::<_, i64>(9)?,
+                            "overtime_before_minutes": r.get::<_, i64>(10)?, "overtime_after_minutes": r.get::<_, i64>(11)?,
+                            "applicable_days": r.get::<_, String>(12)?, "version": r.get::<_, i64>(13)?,
+                        }))
+                    },
+                )
+                .unwrap();
+            assert!(shift_from_value(&row.unwrap()).is_ok());
         }
     }
 

@@ -1,4 +1,21 @@
-# Laporan Pengujian (hasil aktual — build 7: 2026-10-14, Windows 11 x64)
+# Laporan Pengujian (hasil aktual — build 8: 2026-10-14, Windows 11 x64)
+
+## 0. Build 8 — sapu bersih terakhir (tanpa `confirm()` native, anti-panic data korup)
+
+| Perintah | Hasil |
+|---|---|
+| `npx tsc --noEmit` / `eslint` / `vitest run` | **LULUS** — 9/9 |
+| `npm run build` + `npx tauri build` (NSIS) | **LULUS** — exe 14,38 MB + setup 3,48 MB |
+| `cargo fmt` / `clippy -D warnings` / `cargo test` | **LULUS — 74/74 lib**, 4 `#[ignore]` hardware |
+| Smoke test 15 dtk + DB | **LULUS** — integrity ok, 26 tabel |
+
+### Temuan & perbaikan (build 8)
+
+1. `confirm()` native terakhir (Absensi → Kembalikan ke antrean) → `ConfirmDialog` Tabler.
+2. Data shift korup di DB lama (`25:00`) membuat mesin hitung panic via
+   `and_hms_opt().unwrap()` — kini `shift_from_value` memvalidasi (`valid_hm`)
+   dan mengembalikan error ensin yang bisa dibaca + diperbaiki via menu Shift
+   (+1 test; validasi tulis sudah ada sejak build 6).
 
 ## 0. Build 7 — kelengkapan putaran akhir (roundtrip + search + panduan)
 
