@@ -151,9 +151,9 @@ impl Repo {
         per_page: i64,
     ) -> AppResult<(Vec<serde_json::Value>, i64)> {
         let total: i64 = self.query_one(count_sql, p, |r| r.get(0))?.unwrap_or(0);
-        let page = page.max(1);
+        let page = page.clamp(1, 10_000_000);
         let per_page = per_page.clamp(1, 200);
-        let offset = (page - 1) * per_page;
+        let offset = page.saturating_sub(1).saturating_mul(per_page.max(1));
         let sql = format!("{base_sql} LIMIT {per_page} OFFSET {offset}");
         let g = self.lock()?;
         let mut stmt = g.prepare(&sql)?;
@@ -177,9 +177,17 @@ impl Repo {
         let mut inserted = 0i64;
         let mut duplicates = 0i64;
         let mut unmapped = 0i64;
+        let mut invalid = 0i64;
         let now = timex::now_wib_string();
         for e in events {
-            validate_event_time(&e.event_time)?;
+            // Baris dengan waktu korup (firmware rusak/baterai lepas) tidak
+            // boleh menggulung seluruh batch: jika tidak, perangkat gagal
+            // sinkron PAKAM PERMANEN karena checkpoint tak maju. Lewati +
+            // hitung sebagai gagal (masuk karantina log kacau di UI review).
+            if timex::parse_wib(&e.event_time).is_none() {
+                invalid += 1;
+                continue;
+            }
             let mapped: Option<String> = tx.query_row(
                 "SELECT employee_id FROM employee_device_map WHERE device_id=?1 AND device_user_id=?2",
                 params![e.device_id, e.device_user_id],
@@ -205,17 +213,9 @@ impl Repo {
             inserted,
             duplicates,
             unmapped,
+            invalid,
         })
     }
-}
-
-fn validate_event_time(s: &str) -> AppResult<()> {
-    if timex::parse_wib(s).is_none() {
-        return Err(AppError::Validation(format!(
-            "event_time tidak valid (harap WIB YYYY-MM-DD HH:MM:SS): {s}"
-        )));
-    }
-    Ok(())
 }
 
 fn rusqlite_value_to_json(v: rusqlite::types::Value) -> serde_json::Value {
@@ -244,6 +244,7 @@ pub struct IngestReport {
     pub inserted: i64,
     pub duplicates: i64,
     pub unmapped: i64,
+    pub invalid: i64,
 }
 
 #[cfg(test)]
@@ -256,7 +257,7 @@ mod tests {
             .query_one("SELECT COUNT(*) FROM schema_migrations", &[], |x| x.get(0))
             .unwrap()
             .unwrap();
-        assert!(v >= 7);
+        assert!(v >= 9);
     }
     #[test]
     fn ingest_is_idempotent() {
@@ -279,16 +280,31 @@ mod tests {
         assert_eq!(b.unmapped, 1);
     }
     #[test]
-    fn ingest_rejects_bad_time() {
+    fn ingest_skips_bad_time_not_poison_batch() {
+        // Baris zaman korup TIDAK menggulung total batch (poison-pill lama).
         let r = Repo::open_in_memory().unwrap();
-        let ev = RawEventIn {
+        r.exec("INSERT INTO devices (id,name,vendor,model,adapter_name,sdk_version,status,created_at,updated_at) VALUES ('d1','Sim','Mock','M1','mock','1.0','offline','2026-01-01 00:00:00','2026-01-01 00:00:00')", &[]).unwrap();
+        let bad = RawEventIn {
             device_id: "d1".into(),
-            vendor_record_id: "R".into(),
+            vendor_record_id: "R-BAD".into(),
             device_user_id: "U".into(),
             event_time: "not-a-time".into(),
             direction: "in".into(),
             payload_json: "{}".into(),
         };
-        assert!(r.transaction_ingest_events(&[ev]).is_err());
+        let good = RawEventIn {
+            device_id: "d1".into(),
+            vendor_record_id: "R-OK".into(),
+            device_user_id: "U".into(),
+            event_time: "2026-05-01 07:05:00".into(),
+            direction: "in".into(),
+            payload_json: "{}".into(),
+        };
+        let report = r.transaction_ingest_events(&[good.clone(), bad]).unwrap();
+        assert_eq!(report.inserted, 1, "baris valid tetap masuk");
+        assert_eq!(report.invalid, 1, "baris korup terhitung terkarantina");
+        // Baris valid pertama tidak duplikat saat sync berikutnya.
+        let again = r.transaction_ingest_events(&[good]).unwrap();
+        assert_eq!(again.duplicates, 1);
     }
 }

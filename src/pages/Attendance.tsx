@@ -1,7 +1,11 @@
-import { useEffect, useState } from 'react';
-import { api, Row, todayWIB } from '../api';
+import { useEffect, useRef, useState } from 'react';
+import { api, fetchEmployeeNameMap, getUser, Row, todayWIB } from '../api';
 import Layout from '../components/Layout';
 import { ConfirmDialog, EmptyState, Field, LoadingState, StatusBadge, useToast } from '../components/ui';
+
+/** Pembacaan karyawan untuk pemetaan nama — hanya untuk role yang
+ *  benar-benar punya employee.view (operator/viewer tanpa error). */
+const canSeeEmployees = () => ['super_admin', 'hr_admin', 'supervisor'].includes(getUser()?.role ?? '');
 
 export default function Attendance() {
   const toast = useToast();
@@ -17,18 +21,27 @@ export default function Attendance() {
   const [newValue, setNewValue] = useState('');
   const [reason, setReason] = useState('');
   const [correctField, setCorrectField] = useState('clock_in');
+  const myReq = useRef(0);
 
   const load = async () => {
+    const id = ++myReq.current;
     try {
       const r = await api.attendanceReview();
+      if (id !== myReq.current) return;
       setReview(r.review);
       setUnmapped(r.unmapped);
       const res = await api.tableList('attendance_results', 1, 50, date, 'work_date', 'desc');
+      if (id !== myReq.current) return;
       setResults(res.rows);
-      const emp = await api.tableList('employees', 1, 1000, '', 'name', 'asc');
-      const map: Record<string, string> = {};
-      for (const e of emp.rows) map[String(e.id)] = String(e.name ?? e.nik ?? e.id);
-      setNames(map);
+      // Nama karyawan = pelengkap; tepatnya role tanpa employee.view (operator/
+      // viewer) tidak menganggap halaman error — hanya tabel tampil ID ditambah.
+      if (canSeeEmployees()) {
+        fetchEmployeeNameMap()
+          .then((m) => id === myReq.current && setNames(m))
+          .catch(() => {});
+      } else {
+        setNames({});
+      }
     } catch (e) {
       toast.push('error', e instanceof Error ? e.message : String(e));
     }

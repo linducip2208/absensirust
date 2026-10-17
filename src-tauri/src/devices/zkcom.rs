@@ -447,23 +447,25 @@ pub(crate) fn build_event_time(
 }
 
 // ---------------------------------------------------------------------------
-// Host terakhir (trait memisah connect(host) dari operasi lain)
+// Host per-thread (trait memisah connect(host) dari operasi lain). Dulu dari
+// static global: dua sync di utas berbeda (manual vs scheduler) bisa saling
+// menimpa sehingga event perangkat A tercatat sebagai perangkat B.
 // ---------------------------------------------------------------------------
 
-use std::sync::Mutex;
+use std::cell::RefCell;
 
-static LAST_HOST: Mutex<String> = Mutex::new(String::new());
+thread_local! {
+    static LAST_HOST: RefCell<String> = const { RefCell::new(String::new()) };
+}
 
 /// Catat host terakhir saat `connect` agar fetch/info/provision tahu targetnya.
 pub(crate) fn remember_host(host: &str) {
-    if let Ok(mut g) = LAST_HOST.lock() {
-        *g = host.to_string();
-    }
+    LAST_HOST.with(|c| *c.borrow_mut() = host.to_string());
 }
 
 /// Ambil host terakhir; string kosong bila `connect` belum pernah dipanggil.
 pub(crate) fn last_host() -> String {
-    LAST_HOST.lock().map(|g| g.clone()).unwrap_or_default()
+    LAST_HOST.with(|c| c.borrow().clone())
 }
 
 // ---------------------------------------------------------------------------
@@ -686,12 +688,6 @@ impl ZkSession {
             SysFreeString(b);
         }
         s
-    }
-
-    pub(crate) fn enable_device(&mut self, machine: i32, on: bool) -> Result<(), AdapterError> {
-        let mut args = [Variant::boolean(on), Variant::i4(machine)];
-        let _ = self.call_bool("EnableDevice", &mut args)?;
-        Ok(())
     }
 
     pub(crate) fn read_general_log_data(&mut self, machine: i32) -> Result<(), AdapterError> {

@@ -8,6 +8,10 @@ export interface Column {
   type?: 'text' | 'number' | 'date' | 'datetime' | 'select' | 'textarea' | 'hidden' | 'password';
   options?: { value: string; label: string }[];
   required?: boolean;
+  /** Wajib saat Tambah, opsional saat Ubah (mis. password pengguna baru). */
+  requiredOnCreate?: boolean;
+  /** Hanya tampil/diedit saat Ubah; nilai awal mengikuti default DB (mis. is_active). */
+  editOnly?: boolean;
   readOnly?: boolean;
   badge?: boolean;
   hideInTable?: boolean;
@@ -33,12 +37,21 @@ export default function Crud({
   const [form, setForm] = useState<Record<string, string>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [deleting, setDeleting] = useState<Row | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
   const perPage = 15;
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await api.tableList(table, page, perPage, search, order, dir);
+      let res = await api.tableList(table, page, perPage, search, order, dir);
+      // Setelah hapus baris terakhir di halaman terakhir: page bisa di luar
+      // rentang (backend balas kosong meski data ada) — tarik halaman maksimal.
+      const maxPage = Math.max(1, Math.ceil(res.total / perPage));
+      if (res.rows.length === 0 && res.total > 0 && page > maxPage) {
+        setPage(maxPage);
+        res = await api.tableList(table, maxPage, perPage, search, order, dir);
+      }
       setRows(res.rows);
       setTotal(res.total);
     } catch (e) {
@@ -78,15 +91,21 @@ export default function Crud({
   const validate = (): boolean => {
     const errs: Record<string, string> = {};
     for (const c of columns) {
-      if (c.required && !form[c.key]?.trim()) errs[c.key] = 'Wajib diisi';
+      if ((c.required || (c.requiredOnCreate && isNew)) && !form[c.key]?.trim()) errs[c.key] = 'Wajib diisi';
       if (c.key === 'email' && form.email && !form.email.includes('@')) errs.email = 'Email tidak valid';
+    }
+    // Validasi khusus tabel: rentang tanggal izin tidak boleh terbalik
+    // (backend menolak TAPI jauh lebih enak nangkap sebelum kirim).
+    if (table === 'leave_requests' && form.start_date && form.end_date && form.end_date < form.start_date) {
+      errs.end_date = 'Tidak boleh sebelum tanggal mulai';
     }
     setErrors(errs);
     return Object.keys(errs).length === 0;
   };
 
   const save = async () => {
-    if (!validate()) return;
+    if (saving || !validate()) return;
+    setSaving(true);
     try {
       const payload: Record<string, unknown> = {};
       for (const c of columns) {
@@ -112,11 +131,14 @@ export default function Crud({
       await load();
     } catch (e) {
       toast.push('error', e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
     }
   };
 
   const doDelete = async (hard: boolean) => {
-    if (!deleting) return;
+    if (deleteBusy || !deleting) return;
+    setDeleteBusy(true);
     try {
       await api.tableDelete(table, String(deleting.id), hard);
       toast.push('success', hard ? 'Data dihapus permanen' : 'Data dinonaktifkan/dihapus');
@@ -124,6 +146,8 @@ export default function Crud({
       await load();
     } catch (e) {
       toast.push('error', e instanceof Error ? e.message : String(e));
+    } finally {
+      setDeleteBusy(false);
     }
   };
 
@@ -226,9 +250,9 @@ export default function Crud({
               </div>
               <div className="modal-body">
                 <div className="row">
-                  {columns.filter((c) => c.type !== 'hidden' && !(c.readOnly && isNew && c.key === 'id')).map((c) => (
+                  {columns.filter((c) => c.type !== 'hidden' && !(c.editOnly && isNew) && !(c.readOnly && isNew && c.key === 'id')).map((c) => (
                     <div className="col-md-6" key={c.key}>
-                      <Field label={`${c.label}${c.required ? ' *' : ''}`} error={errors[c.key]}>
+                      <Field label={`${c.label}${c.required || (c.requiredOnCreate && isNew) ? ' *' : ''}`} error={errors[c.key]}>
                         {c.type === 'select' ? (
                           <select
                             className={`form-select${errors[c.key] ? ' is-invalid' : ''}`}
@@ -265,7 +289,9 @@ export default function Crud({
               </div>
               <div className="modal-footer">
                 <button className="btn btn-link link-secondary" onClick={() => setEditing(null)}>Batal</button>
-                <button className="btn btn-primary" onClick={save}>Simpan</button>
+                <button className="btn btn-primary" onClick={save} disabled={saving}>
+                  {saving ? 'Menyimpan…' : 'Simpan'}
+                </button>
               </div>
             </div>
           </div>
@@ -280,7 +306,6 @@ export default function Crud({
           onCancel={() => setDeleting(null)}
           onConfirm={() => doDelete(false)}
         />
-      )}
-    </div>
+      )}    </div>
   );
 }

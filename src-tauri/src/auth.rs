@@ -173,6 +173,13 @@ impl SessionStore {
     pub fn invalidate(&self, token: &str) {
         self.inner.lock().unwrap().remove(token);
     }
+
+    /// Buang semua sesi milik satu pengguna (dipanggil saat role/is_active/
+    /// password berubah agar hak lama tidak bertahan sampai timeout).
+    pub fn invalidate_user(&self, user_id: &str) {
+        let mut map = self.inner.lock().unwrap();
+        map.retain(|_, s| s.user_id != user_id);
+    }
     /// Rate-limit login sederhana: hitung kegagalan per username dalam memori.
     pub fn check_permission(&self, token: &str, perm: &str) -> AppResult<Session> {
         let s = self
@@ -214,7 +221,9 @@ pub fn login(
         return Err(AppError::Auth("username/password salah".into()));
     };
     if active == 0 {
-        return Err(AppError::Auth("akun nonaktif".into()));
+        // Pesan disamakan dengan "salah" agar akun nonaktif tidak bisa
+        // dienumerasi dari luar (beda teks = bocor daftar akun).
+        return Err(AppError::Auth("username/password salah".into()));
     }
     let hash: Option<String> = repo.query_one(
         "SELECT password_hash FROM users WHERE id=?1",
@@ -255,13 +264,17 @@ fn key_of(username: &str) -> String {
 
 fn is_locked_out(username: &str) -> bool {
     let mut m = fails_map().lock().unwrap();
-    // Purge entri basi agar map tak bocor.
-    m.retain(|_, (n, t)| *n >= 5 && t.elapsed().as_secs() < 300);
+    // Purge SEMUA entri yang lebih tua dari jendela (dulu hanya yang ≥5
+    // kegagalan — username acak dengan <5 gagal menumpuk selamanya).
+    m.retain(|_, (_, t)| t.elapsed().as_secs() < 300);
     matches!(m.get(&key_of(username)), Some((n, t)) if *n >= 5 && t.elapsed().as_secs() < 300)
 }
 
 fn mark_fail(username: &str) {
     let mut m = fails_map().lock().unwrap();
+    if m.len() > 10_000 {
+        m.clear(); // anti meluap memori dari ujung-ujung username acak
+    }
     let e = m
         .entry(key_of(username))
         .or_insert((0, std::time::Instant::now()));

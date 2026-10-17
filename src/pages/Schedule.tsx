@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api, ConflictReport, downloadFile, Row, ScheduleImportRow, ScheduleWeek, todayWIB } from '../api';
 import Layout from '../components/Layout';
 import { ConfirmDialog, EmptyState, Field, LoadingState, StatusBadge, useToast } from '../components/ui';
@@ -36,30 +36,42 @@ export default function Schedule() {
   const [impCsv, setImpCsv] = useState('');
   const [impPreview, setImpPreview] = useState<{ rows: ScheduleImportRow[]; errors: string[] } | null>(null);
   const [deciding, setDeciding] = useState<{ id: string; approve: boolean } | null>(null);
+  const [swapBusy, setSwapBusy] = useState(false);
 
   const empName = (id: string) => employees.find((x) => String(x.id) === id)?.name ?? id;
   const shiftCode = (id: string) => shifts.find((x) => String(x.id) === id)?.code ?? id;
 
+  const myReq = useRef(0);
   const load = async (ws: string) => {
+    const id = ++myReq.current;
     setLoading(true);
+    // Kartu kanan (bentrok/tukar) direset dulu: dulu bila scheduleConflicts
+    // gagal, kartu menampilkan loading berputar/hasil minggu lama selamanya.
+    setConflicts(null);
     try {
       const [w, s, e] = await Promise.all([
         api.scheduleWeek(ws),
         api.tableList('shifts', 1, 100, '', 'code', 'asc'),
-        api.tableList('employees', 1, 500, '', 'name', 'asc'),
+        api.tableList('employees', 1, 200, '', 'name', 'asc'),
       ]);
+      if (id !== myReq.current) return;
       setData(w);
       setShifts(s.rows.filter((r) => String(r.is_active) === '1'));
       setEmployees(e.rows);
-      const c = await api.scheduleConflicts(ws, addDays(ws, 6));
-      setConflicts(c);
-      const sw = await api.tableList('shift_swaps', 1, 50, '', 'created_at', 'desc');
-      setSwaps(sw.rows);
     } catch (err) {
       toast.push('error', err instanceof Error ? err.message : String(err));
-    } finally {
-      setLoading(false);
+      if (id === myReq.current) { setLoading(false); }
+      return;
     }
+    const c = await api.scheduleConflicts(ws, addDays(ws, 6)).catch(() => null);
+    if (id !== myReq.current) return;
+    setConflicts(c);
+    const sw = await api
+      .tableList('shift_swaps', 1, 50, '', 'created_at', 'desc')
+      .catch(() => null);
+    if (id !== myReq.current) return;
+    setSwaps(sw?.rows ?? []);
+    if (id === myReq.current) setLoading(false);
   };
 
   useEffect(() => {
@@ -105,6 +117,8 @@ export default function Schedule() {
       toast.push('error', 'Lengkapi pengajuan tukar shift');
       return;
     }
+    if (swapBusy) return;
+    setSwapBusy(true);
     try {
       await api.swapRequest(swapForm.employee_id, swapForm.from_shift_id, swapForm.to_shift_id, swapForm.swap_date, swapForm.reason);
       toast.push('success', 'Pengajuan tukar shift dibuat (menunggu persetujuan)');
@@ -112,6 +126,8 @@ export default function Schedule() {
       await load(weekStart);
     } catch (e) {
       toast.push('error', e instanceof Error ? e.message : String(e));
+    } finally {
+      setSwapBusy(false);
     }
   };
 
@@ -329,7 +345,9 @@ export default function Schedule() {
             <div className="col-md-2"><Field label="Tanggal"><input type="date" className="form-control" value={swapForm.swap_date} onChange={(e) => setSwapForm({ ...swapForm, swap_date: e.target.value })} /></Field></div>
             <div className="col-md-3"><Field label="Alasan"><input className="form-control" value={swapForm.reason} onChange={(e) => setSwapForm({ ...swapForm, reason: e.target.value })} /></Field></div>
           </div>
-          <button className="btn btn-primary" onClick={doSwapRequest}>Ajukan tukar shift</button>
+          <button className="btn btn-primary" onClick={doSwapRequest} disabled={swapBusy}>
+            {swapBusy ? 'Mengajukan…' : 'Ajukan tukar shift'}
+          </button>
           <hr />
           <div className="table-responsive">
             <table className="table table-vcenter">

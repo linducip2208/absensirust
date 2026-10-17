@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react';
-import { api, LeaveBalance, pickFile, Row } from '../api';
+import { useCallback, useEffect, useState } from 'react';
+import { api, fetchEmployeeNameMap, getUser, LeaveBalance, pickFile, Row } from '../api';
 import Crud, { Column } from '../components/Crud';
 import Layout from '../components/Layout';
-import { useToast } from '../components/ui';
+import { ConfirmDialog, useToast } from '../components/ui';
 
 const LEAVE_TYPE: Column[] = [
   { key: 'code', label: 'Kode', required: true },
@@ -41,24 +41,109 @@ export default function Leaves() {
         <button className={`btn ${tab === 'lembur' ? 'btn-primary' : ''}`} onClick={() => setTab('lembur')}>Lembur</button>
         <button className={`btn ${tab === 'jenis' ? 'btn-primary' : ''}`} onClick={() => setTab('jenis')}>Jenis cuti</button>
       </div>
-      {tab === 'izin' && <Crud table="leave_requests" title="Pengajuan izin/cuti" columns={LEAVE} orderBy="start_date" />}
-      {tab === 'izin' && <AttachmentCard />}
-      {tab === 'izin' && <BalanceCard />}
+      {tab === 'izin' && (
+        <>
+          <Crud table="leave_requests" title="Pengajuan izin/cuti" columns={LEAVE} orderBy="start_date" />
+          {['super_admin', 'hr_admin', 'supervisor'].includes(getUser()?.role ?? '') && <DecisionCard />}
+          <AttachmentCard />
+          <BalanceCard />
+        </>
+      )}
       {tab === 'lembur' && <Crud table="overtime_requests" title="Pengajuan lembur" columns={OT} orderBy="work_date" />}
       {tab === 'jenis' && <Crud table="leave_types" title="Jenis cuti" columns={LEAVE_TYPE} orderBy="code" />}
     </Layout>
   );
 }
 
+/** Keputusan pengajuan izin/cuti: memakai perintah khusus `leave_decide`
+ *  (butuh leave.approve) — bukan table_update generik yang butuh leave.manage,
+ *  sehingga supervisor bisa memutuskan tanpa izin manajemen penuh. */
+function DecisionCard() {
+  const toast = useToast();
+  const [reqs, setReqs] = useState<Row[]>([]);
+  const [names, setNames] = useState<Record<string, string>>({});
+  const [sel, setSel] = useState('');
+  const [deciding, setDeciding] = useState<{ id: string; approve: boolean } | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(() => {
+    api.tableList('leave_requests', 1, 200, '', 'start_date', 'desc')
+      .then((r) => setReqs(r.rows.filter((x) => String(x.status) === 'pending')))
+      .catch((e: Error) => toast.push('error', e.message));
+  }, [toast]);
+  useEffect(() => {
+    load();
+    fetchEmployeeNameMap().then(setNames).catch(() => {});
+  }, [load]);
+
+  const decide = async (approve: boolean) => {
+    if (!deciding) return;
+    setBusy(true);
+    try {
+      await api.leaveDecide(deciding.id, approve);
+      toast.push('success', approve ? 'Pengajuan disetujui' : 'Pengajuan ditolak');
+      setSel('');
+      load();
+    } catch (e) {
+      toast.push('error', e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+      setDeciding(null);
+    }
+  };
+
+  return (
+    <div className="card mt-3">
+      <div className="card-header"><h3 className="card-title">Keputusan pengajuan</h3></div>
+      <div className="card-body d-flex gap-2 align-items-end flex-wrap">
+        <div>
+          <label className="form-label">Pengajuan menunggu</label>
+          <select className="form-select" value={sel} onChange={(e) => setSel(e.target.value)}>
+            <option value="">— Pilih —</option>
+            {reqs.map((x) => (
+              <option key={String(x.id)} value={String(x.id)}>
+                {names[String(x.employee_id)] ?? String(x.employee_id)} · {String(x.start_date)} s/d {String(x.end_date)}
+              </option>
+            ))}
+          </select>
+        </div>
+        <button className="btn btn-success" disabled={!sel || busy} onClick={() => setDeciding({ id: sel, approve: true })}>
+          Setujui
+        </button>
+        <button className="btn btn-outline-danger" disabled={!sel || busy} onClick={() => setDeciding({ id: sel, approve: false })}>
+          Tolak
+        </button>
+        {reqs.length === 0 && <div className="text-secondary">Tidak ada pengajuan menunggu.</div>}
+      </div>
+      {deciding && (
+        <ConfirmDialog
+          title={deciding.approve ? 'Setujui pengajuan?' : 'Tolak pengajuan?'}
+          body={deciding.approve
+            ? 'Status akan menjadi approved dan terhitung pada saldo cuti.'
+            : 'Status akan menjadi rejected.'}
+          confirmLabel={deciding.approve ? 'Setujui' : 'Tolak'}
+          onCancel={() => setDeciding(null)}
+          onConfirm={() => decide(deciding.approve)}
+        />
+      )}
+    </div>
+  );
+}
+
 function AttachmentCard() {
   const toast = useToast();
   const [reqs, setReqs] = useState<Row[]>([]);
+  const [names, setNames] = useState<Record<string, string>>({});
   const [sel, setSel] = useState('');
   const [busy, setBusy] = useState(false);
   useEffect(() => {
     api.tableList('leave_requests', 1, 200, '', 'start_date', 'desc')
       .then((r) => setReqs(r.rows))
       .catch((e: Error) => toast.push('error', e.message));
+    // Nama karyawan = pelengkap; jika role tidak punya employee.view tetap tampil ID.
+    if (['super_admin', 'hr_admin', 'supervisor'].includes(getUser()?.role ?? '')) {
+      fetchEmployeeNameMap().then(setNames).catch(() => {});
+    }
   }, [toast]);
   const upload = async () => {
     if (!sel) {
@@ -87,7 +172,7 @@ function AttachmentCard() {
             <option value="">— Pilih —</option>
             {reqs.map((x) => (
               <option key={String(x.id)} value={String(x.id)}>
-                {String(x.start_date)} — {String(x.employee_id)} ({String(x.status)})
+                {String(x.start_date)} — {names[String(x.employee_id)] ?? String(x.employee_id)} ({String(x.status)})
               </option>
             ))}
           </select>

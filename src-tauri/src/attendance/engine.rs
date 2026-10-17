@@ -358,32 +358,21 @@ pub fn compute_day(inp: &ComputeInput) -> ComputeOutput {
             let mut gross = (co - ci).num_minutes().max(0);
             gross = round_down(gross, inp.rounding_minutes.max(1));
             let work = (gross - inp.shift.break_minutes).max(0);
-            // Lembur sesudah shift.
+            // Lembur sesudah shift: batasi wajar sampai batas kebijakan.
             let after = (co - win_end).num_minutes().max(0);
-            let mut ot = after.min(inp.shift.overtime_after_minutes + 480); // batasi wajar 8 jam di atas cap
-            ot = ot.min(
-                inp.shift
-                    .overtime_after_minutes
-                    .max(after.min(inp.shift.overtime_after_minutes)),
-            );
+            let ot = after.min(inp.shift.overtime_after_minutes.max(0));
             // Jika kebijakan mewajibkan approval, hanya hitung yang disetujui.
             let (ot_final, ot_approved) = if inp.require_overtime_approval {
                 (
-                    ot.min(inp.overtime_approved_minutes),
+                    ot.min(inp.overtime_approved_minutes.max(0)),
                     inp.overtime_approved_minutes > 0,
                 )
             } else {
                 (ot, true)
             };
-            // Lembur sebelum shift (datang sangat awal) bila kebijakan mengizinkan.
-            let _before = if inp.shift.overtime_before_minutes > 0 {
-                (win_start - ci)
-                    .num_minutes()
-                    .max(0)
-                    .min(inp.shift.overtime_before_minutes)
-            } else {
-                0
-            };
+            // Catatan: kolom overtime_before_minutes tersimpan kebijakan
+            // tetapi belum menambah lembur otomatis (dokumentasi terbuka di
+            // KNOWN_LIMITATIONS).
             let status = if late > 0 {
                 AttendanceStatus::Late
             } else {
@@ -479,22 +468,21 @@ pub fn group_events_for_shift(
         };
     }
     let ci = in_win[0];
-    // Clock-out = event terakhir setelah clock-in; duplikat = event dalam 5 menit setelah ci.
+    // Duplikat = event < 5 menit setelah clock-in (pembacaan ulang ganda).
     let dup = in_win
         .iter()
         .skip(1)
         .filter(|t| (**t - ci).num_minutes() < 5)
         .count() as i64;
-    let co = if in_win.len() > 1 {
-        Some(*in_win.last().unwrap())
-    } else {
-        None
-    };
-    // Jika co sama dengan ci (satu event), anggap incomplete.
-    let co = match co {
-        Some(c) if c == ci => None,
-        x => x,
-    };
+    // Clock-out = event TERAKHIR yang benar-benar setelah clock-in (≥5 menit).
+    // Klaster duplikat di pintu masuk (mis. 07:00,07:02,07:04) tidak boleh
+    // dihitung sebagai clock-out 0 menit — jika tidak ada event ≥5 menit
+    // setelah clock-in, hari ini belum punya valid clock-out (incomplete).
+    let co = in_win
+        .iter()
+        .rev()
+        .find(|t| (**t - ci).num_minutes() >= 5)
+        .copied();
     DayEvents {
         clock_in: Some(ci),
         clock_out: co,
@@ -521,7 +509,7 @@ mod tests {
             240,
             0,
             60,
-            "1,2,3,4,5",
+            "0,1,2,3,4",
             1,
         )
     }
@@ -539,7 +527,7 @@ mod tests {
             240,
             0,
             60,
-            "1,2,3,4,5",
+            "0,1,2,3,4",
             1,
         )
     }
@@ -567,6 +555,38 @@ mod tests {
             overtime_approved_minutes: 0,
             require_overtime_approval: true,
         }
+    }
+
+    #[test]
+    fn cluster_duplikat_tidak_jadi_clock_out() {
+        // Tiga pembacaan ganda di pintu masuk (07:00/07:02/07:04) tidak boleh
+        // menghasilkan "Present dengan 0 menit kerja": tidak ada event ≥5 menit
+        // setelah clock-in → clock-out tetap kosong (incomplete).
+        let inp = group_events_for_shift(
+            &pagi(),
+            &d("2026-05-04"),
+            vec![
+                dt("2026-05-04 07:00:00"),
+                dt("2026-05-04 07:02:00"),
+                dt("2026-05-04 07:04:00"),
+            ],
+        );
+        assert_eq!(inp.duplicate_count, 2);
+        assert!(inp.clock_out.is_none());
+        assert_eq!(inp.clock_in, Some(dt("2026-05-04 07:00:00")));
+    }
+
+    #[test]
+    fn applicable_days_konvensi_senin_nol() {
+        // Konvensi 0=Senin..6=Minggu (sesuai label UI): Senin harus berlaku
+        // untuk shift seed 0,1,2,3,4 dan Minggu libur.
+        let sh = pagi();
+        let sen = d("2026-05-04"); // Senin
+        let min = d("2026-05-10"); // Minggu
+        assert!(sh.applies_to_weekday(&sen));
+        assert!(!sh.applies_to_weekday(&min));
+        // Sabtu juga di luar jadwal Sen-Jum.
+        assert!(!sh.applies_to_weekday(&d("2026-05-09")));
     }
 
     #[test]

@@ -1,19 +1,35 @@
 AttendX Rust
-Versi aplikasi : 1.0.0 (build 8, 2026-10-14)
-Versi database : 7 (migrasi v1-v7, kompatibel mundur — data lama tidak hilang)
+Versi aplikasi : 1.0.0 (build 9, 2026-10-17)
+Versi database : 9 (migrasi v1-v9, kompatibel mundur — data lama tidak hilang)
 Target         : Windows 10/11 x64
 Zona waktu     : Asia/Jakarta (WIB)
 Mode           : Offline (tanpa internet, tanpa CDN)
 
 Biner:
-- AttendX-Rust.exe (portable, 14,38 MB)
-- Installer\AttendX Rust_1.0.0_x64-setup.exe (NSIS, 3,48 MB)
+- AttendX-Rust.exe (portable, 14,35 MB)
+- Installer\AttendX Rust_1.0.0_x64-setup.exe (NSIS, 3,49 MB)
 
-Verifikasi build 8:
-- tsc + eslint + vitest 9/9 + npm build: LULUS
-- cargo fmt + clippy + cargo test 74/74 (+4 hardware di-ignore): LULUS
-- Smoke test: integrity_check ok, 26 tabel, tanpa kredensial default
+Verifikasi build 9:
+- tsc + eslint + vitest 10/10 + npm build: LULUS
+- cargo fmt + clippy + cargo test 77/77 (+4 hardware di-ignore): LULUS
+- Smoke test: integrity_check ok, 26 tabel, migrasi v9 teraplikasi
+  (konvensi applicable_days 0=Sen..6=Min), tanpa kredensial default
 - PDF laporan multi-halaman tervalidasi
+
+Yang berubah dari build 8 (sapu bersih hasil audit menyeluruh):
+- Laporan log (log perangkat / error sinkron / riwayat koreksi) kini berfungsi;
+  filter tak relevan disembunyikan otomatis
+- Konvensi hari kerja shift diperbaiki via migrasi v9 (Senin tak lagi dihitung
+  sebagai hari libur untuk seed bawaan)
+- Hak tulis diperketat: raw_events/attendance_results/audit_log/app_settings
+  tidak lagi bisa berubah lewat UI CRUD generik (viewer/supervisor/operator)
+- Keputusan izin/cuti: tombol Setujui/Tolak khusus (supervisor bisa memutuskan)
+- Pengguna baru wajib password; ubah role/password/nonaktif berlaku segera
+  (sesi lama dibatalkan)
+- Ingest event korup tak lagi menggulung balik seluruh batch (dilewati + dilapor)
+- Sinkronisasi manual vs terjadwal tidak bisa tabrakan (kunci)
+- Mesin absensi: scan ganda tidak lagi jadi clock-out 0 menit; status "Absent"
+  tidak ditulis sebelum jendela shift berakhir
 
 SDK hardware: adapter ZKTeco/Solution/Hikvision terimplementasi (butuh DLL +
 uji perangkat fisik, lihat vendor-sdk\CARA-PASANG-DLL.txt). TIME TECH AC6

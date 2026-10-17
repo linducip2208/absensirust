@@ -48,6 +48,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "backup_auto",
         sql: include_str!("migrations/008_backup_auto.sql"),
     },
+    Migration {
+        version: 9,
+        name: "fix_applicable_days",
+        sql: include_str!("migrations/009_fix_applicable_days.sql"),
+    },
 ];
 
 pub fn ensure_migrations(conn: &rusqlite::Connection) -> rusqlite::Result<()> {

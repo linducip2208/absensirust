@@ -1,4 +1,109 @@
-# Laporan Pengujian (hasil aktual — build 8: 2026-10-14, Windows 11 x64)
+# Laporan Pengujian (hasil aktual — build 9: 2026-10-17, Windows 11 x64)
+
+## 0. Build 9 — audit menyeluruh (konvensi hari, laporan log diperbaiki, guard tulis tabel)
+
+| Perintah | Hasil |
+|---|---|
+| `npx tsc --noEmit` / `eslint` / `vitest run` | **LULUS** — 10/10 |
+| `npm run build` + `npx tauri build` (NSIS) | **LULUS** — exe 14,35 MB + setup 3,49 MB |
+| `cargo fmt` / `clippy -D warnings` / `cargo test` | **LULUS — 77/77 lib**, 4 `#[ignore]` hardware |
+| Smoke test 15 dtk + DB | **LULUS** — integrity ok, 26 tabel, **migrasi v9 teraplikasi**, seed shift kini `0,1,2,3,4` |
+
+### Bug nyata diperbaiki (build 9) — hasil audit 3 utas + verifikasi manual
+
+**Backend:**
+
+1. **Konvensi `applicable_days` salah untuk seed** (braket: kode 0=Sen..6=Min,
+   seed pakai `'1,2,3,4,5'` → Senin dianggap libur untuk semua shift seed).
+   Konvensi tetap 0-based; data dimigrasi (migrasi **v9** `009_fix_applicable_days.sql`
+   `1,2,3,4,5`→`0,1,2,3,4` untuk PAGI/SIANG/MALAM), seed & fallback
+   `shift_from_value` ikut diperbaiki (+test `applicable_days_konvensi_senin_nol`).
+2. **Laporan `error_sync` & `riwayat_koreksi` 100% rusak** (rusqlite
+   `InvalidParameterCount`: placeholder ≠ jumlah argumen; `log_perangkat`
+   rusak bila filter opsional diisi). `report_data` ditulis ulang: pasangan
+   kondisi+placeholder `?N` selalu sejumlah argumen, validasi tanggal pad
+   + penolakan rentang terbalik, filter per-jenis yang jujur (`terlambat`
+   → `late_minutes>0`, dst), 3 jenis log memakai rentang penuh hari + tepat 2 argumen.
+3. **Kebocoran otorisasi via tabel API generik**: viewer/supervisor/operator
+   bisa MENGUBAH `raw_events`/`attendance_results`; `audit_log` bisa diedit;
+   `app_settings` rusak via create (injeksi kolom `id`). Kini semua ditolak
+   eksplisit di create/update/delete dengan pesan jelas.
+4. **Poison-pill ingest**: satu `event_time` korup menggulung balik seluruh
+   batch selamanya → kini baris korup dilewati per-baris (lapor `invalid`),
+   batch tetap masuk; UI sinkronisasi menampilkan jumlah dilewati (+test
+   `ingest_skips_bad_time_not_poison_batch`).
+5. **`device_sync` manual melewati `sync_lock()`** (bisa tabrakan dengan
+   scheduler) → kini mengambil lock dengan fail-fast `Conflict`.
+6. **Data race `LAST_HOST` global static** di zkcom → `thread_local`.
+7. **zkteco**: pasangan `EnableDevice(false)`/re-enable dihapus (baca log
+   tidak mengunci perangkat; jika re-enable gagal terminal nyaris mati);
+   `enable_device` tak terpakai dihapus (dead code clippy `-D warnings`).
+8. **Approve tukar jadwal tanpa cek bentrok** → kini cek clash (contoh
+   assignment asal dikecualikan) + eksistensi shift tujuan & karyawan pada
+   `swap_request`/approve; tanggal tanpa nol-pad ditolak (`parse_date` ketat).
+9. **Sesi target dibatalkan saat users diubah/hapus** (role/password/
+   is_active baru berlaku segera, bukan saat sesi lama kedaluwarsa).
+10. **`guard_user_update`**: larang ubah role/nonaktifkan diri sendiri,
+    larang menurunkan/nonaktifkan super_admin terakhir, role divalidasi.
+11. **JSON bool → "true"/"false" di kolom INTEGER** (merusak filter
+    `is_active`) → ditulis `"1"/"0"`.
+12. **Race enable/disable scheduler** (`sched_enabled` vs tugas lama masih
+    hidup) → `AppState.sched_task: Mutex<Option<JoinHandle>>`; enable =
+    hentikan lama + tarik tugas baru, disable = hentikan.
+13. **Perintah `leave_decide` baru** (butuh `leave.approve`) — supervisor
+    tadinya dead-end (punya `leave.approve` tapi update generik butuh
+    `leave.manage`); inti logika diekstrak +1 test
+    (`leave_decide_pending_sekali_saja`).
+14. **Validasi kolom tanggal** (`leave_requests` start≤end via `parse_date`,
+    `holidays`/`work_calendar`/`overtime_requests`/`employees` wajib pad),
+    whitelist `work_calendar.kind` = `kerja|libur`, lembur `minutes>=0`.
+15. **Rate-limit**: entri lama dipurge massal + map dibersihkan saat >10rb;
+    pesan login seragam (anti-enumerasi).
+16. **Sinkronisasi**: batal dicek pertama (tanpa catatan gagal perangkat);
+    error non-retryable langsung berhenti; `SyncStats.failed` jujur =
+    jumlah baris korup yang dilewati.
+17. `shift_history` payload disusun via serde (SQL `printf` dihapus);
+    `device_registry` kini wajib token + `device.view`; dashboard
+    `tidak_hadir` tak lagi menghitung belum-lengkap (kolom baru).
+18. **Mesin absensi**: cluster scan ganda di akhir masuk tak lagi menjadi
+    clock-out (0 menit "Present") — clock-out = event ≥5 menit setelah
+    clock-in (+test); lembur sebelum shift dead-code dihapus (kebijakan
+    `overtime_before_minutes` dikikis —lihat KNOWN_LIMITATIONS); "Absent"
+    tak ditulis bila jendela shift belum berakhir (skip +
+    `skipped_window_not_ended` di JSON hitung).
+
+**Frontend:**
+
+19. **Sesi kedaluwarsa dead-end** → wrapper `invoke` mendeteksi error auth,
+    membersihkan sesi + mengarahkan ke `#/login` otomatis.
+20. `ToastProvider` stabil (refuse re-render berantai refetch); Crud
+    anti dobel-submit (`saving`/`deleteBusy`) + tarik-ulang halaman luar
+    rentang; GlobalSearch debtor 300 ms + gunakan-gilira (race safe).
+21. Karyawan: **ekspor CSV halaman-loop** (dulu terpotong diam-diam di
+    200 baris), foto 500→200, nama pakai helper `fetchEmployeeNameMap`
+    (lebih tahan bila role tanpa `employee.view`).
+22. Devices: status error registry/SDK dinyatakan jelas (bukan "Memuat…"
+    abadi), reload setelah tes/sinkron, sinkron menampilkan jumlah dilewati.
+23. Jadwal/Presensi/Dasbor: kirim-permintaan berurutan (kalahkan race
+    `myReq`), konflik/tukar reset sebelum muat, footer `-` untuk kosong.
+24. Leaves: **kartu Keputusan** (pilih pengajuan pending + Setujui/Tolak
+    via `leave_decide` + ConfirmDialog) + lampiran menampilkan nama
+    karyawan (bukan UUID).
+25. Users: **password wajib saat tambah** (`requiredOnCreate`),
+    `is_active` hanya tersedia saat ubah (default ada = aktif).
+26. Kalender: opsi "setengah" dihapus (backend kini menolak).
+27. Laporan: baris filter cabang/departemen/shift/status/karyawan
+    disembunyikan untuk 3 jenis log + petunjuk (dulu tampil tapi diabaikan).
+28. Kontrak IPC diperluas: `device_registry(token)`, `leave_decide`
+    (test frontend 9→10).
+
+### Yang disengaja tidak diubah (build 9)
+
+- `setup_admin` TOCTOU jendela kecil (kredensial default memang tidak ada;
+  tabel tetap kosong hingga admin dibuat — risiko rendah, terdokumentasi).
+- Bocor BSTR zkcom jalur error (lihat KNOWN_LIMITATIONS no. 12).
+- Pemetaan pesan `UNIQUE` per-kolom (masih pesan generik yang jelas).
+- Matriks peran→tabel tulis penuh (permisive column guard sudah diberkas).
 
 ## 0. Build 8 — sapu bersih terakhir (tanpa `confirm()` native, anti-panic data korup)
 

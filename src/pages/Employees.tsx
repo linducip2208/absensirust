@@ -36,6 +36,7 @@ export default function Employees() {
   const [csv, setCsv] = useState('');
   const [preview, setPreview] = useState<{ headers: string[]; rows: { line: number; data: Record<string, string>; errors: string[] }[]; errors: string[] } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [exportBusy, setExportBusy] = useState(false);
 
   const doPreview = async () => {
     setBusy(true);
@@ -68,16 +69,30 @@ export default function Employees() {
   };
 
   const exportCsv = async () => {
+    setExportBusy(true);
     try {
-      const res = await api.tableList('employees', 1, 200, '', 'name', 'asc');
+      // Halaman demi halaman — dulu hanya halaman-1/200 (sisanya hilang
+      // senyap untuk kantor >200 karyawan).
       const head = ['nik', 'name', 'email', 'phone', 'hire_date', 'status'];
+      const rows: Row[] = [];
+      let page = 1;
+      let total = Infinity;
+      while (rows.length < total) {
+        const res = await api.tableList('employees', page, 200, '', 'name', 'asc');
+        total = res.total;
+        rows.push(...res.rows);
+        if (res.rows.length === 0) break;
+        page += 1;
+      }
       const lines = [head.join(',')].concat(
-        res.rows.map((r) => head.map((h) => `"${String(r[h] ?? '').replace(/"/g, '""')}"`).join(',')),
+        rows.map((r) => head.map((h) => `"${String(r[h] ?? '').replace(/"/g, '""')}"`).join(',')),
       );
       downloadFile('karyawan.csv', lines.join('\n'), 'text/csv');
-      toast.push('success', 'Data karyawan diekspor ke CSV');
+      toast.push('success', `Diekspor ${rows.length} karyawan ke CSV`);
     } catch (e) {
       toast.push('error', e instanceof Error ? e.message : String(e));
+    } finally {
+      setExportBusy(false);
     }
   };
 
@@ -86,7 +101,9 @@ export default function Employees() {
         <button className={`btn ${tab === 'data' ? 'btn-primary' : ''}`} onClick={() => setTab('data')}>Data karyawan</button>
         <button className={`btn ${tab === 'map' ? 'btn-primary' : ''}`} onClick={() => setTab('map')}>Mapping device</button>
         {canWrite && <button className={`btn ${tab === 'import' ? 'btn-primary' : ''}`} onClick={() => setTab('import')}>Impor CSV</button>}
-        <button className="btn btn-outline-primary" onClick={exportCsv}>Ekspor CSV</button>
+        <button className="btn btn-outline-primary" disabled={exportBusy} onClick={exportCsv}>
+          {exportBusy ? 'Mengekspor…' : 'Ekspor CSV'}
+        </button>
       </div>
       {tab === 'data' && <Crud table="employees" title="Karyawan" columns={COLUMNS} orderBy="name" canWrite={canWrite} allowHardDelete initialSearch={fromSearch} />}
       {tab === 'data' && canWrite && <PhotoCard />}
@@ -146,10 +163,10 @@ function PhotoCard() {
   const [sel, setSel] = useState('');
   const [busy, setBusy] = useState(false);
   useEffect(() => {
-    api.tableList('employees', 1, 500, '', 'name', 'asc')
+    api.tableList('employees', 1, 200, '', 'name', 'asc')
       .then((r) => setEmps(r.rows))
-      .catch((e: Error) => toast.push('error', e.message));
-  }, [toast]);
+      .catch(() => setEmps([]));
+  }, []);
   const upload = async () => {
     if (!sel) {
       toast.push('error', 'Pilih karyawan dulu');

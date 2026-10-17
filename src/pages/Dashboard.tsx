@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { api, DashboardData, todayWIB } from '../api';
@@ -23,12 +23,17 @@ export default function Dashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [date, setDate] = useState(todayWIB());
   const [failed, setFailed] = useState(false);
+  const myReq = useRef(0);
 
   const load = async (d: string) => {
+    const id = ++myReq.current;
     setFailed(false);
     try {
-      setData(await api.dashboard(d));
+      const res = await api.dashboard(d);
+      if (id !== myReq.current) return;
+      setData(res);
     } catch (e) {
+      if (id !== myReq.current) return;
       setFailed(true);
       toast.push('error', e instanceof Error ? e.message : String(e));
     }
@@ -132,7 +137,7 @@ export default function Dashboard() {
                       )}
                       {data.recent.map((r, i) => (
                         <tr key={i}>
-                          <td>{r.date}</td><td>{r.name}</td><td>{r.in ?? '-'}</td><td>{r.out ?? '-'}</td>
+                          <td>{r.date}</td><td>{r.name}</td><td>{r.in || '-'}</td><td>{r.out || '-'}</td>
                           <td><StatusBadge value={r.status} /></td>
                         </tr>
                       ))}

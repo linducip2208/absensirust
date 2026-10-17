@@ -1,5 +1,5 @@
 import { NavLink, useNavigate } from 'react-router-dom';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { api, clearSession, getUser, SearchRow } from '../api';
 import { useToast } from './ui';
 
@@ -114,22 +114,34 @@ function GlobalSearch() {
   const [rows, setRows] = useState<SearchRow[]>([]);
   const [open, setOpen] = useState(false);
   const [searched, setSearched] = useState(false);
-  const go = async (v: string) => {
+  // Debounce + antrean berurutan: dulu 1 IPC per ketukan; hasil query lama
+  // bisa menimpa yang lebih baru (hasil "bud" menggantikan hasil "budi").
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const myReq = useRef(0);
+  const go = (v: string) => {
     setQ(v);
+    if (timer.current) clearTimeout(timer.current);
     if (v.trim().length < 2) {
+      myReq.current += 1; // batalkan in-flight
       setRows([]);
       setOpen(false);
       setSearched(false);
       return;
     }
-    try {
-      const r = await api.searchGlobal(v.trim());
-      setRows([...r.employees, ...r.devices]);
-      setSearched(true);
-      setOpen(true);
-    } catch (e) {
-      toast.push('error', e instanceof Error ? e.message : String(e));
-    }
+    timer.current = setTimeout(async () => {
+      const id = ++myReq.current;
+      try {
+        const r = await api.searchGlobal(v.trim());
+        if (id !== myReq.current) return;
+        setRows([...r.employees, ...r.devices]);
+        setSearched(true);
+        setOpen(true);
+      } catch (e) {
+        if (id === myReq.current) {
+          toast.push('error', e instanceof Error ? e.message : String(e));
+        }
+      }
+    }, 300);
   };
   return (
     <div style={{ position: 'relative', minWidth: 260 }}>

@@ -21,6 +21,8 @@ pub struct AppState {
     pub db_path: PathBuf,
     pub sched_enabled: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub sched_running: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Pegangan task scheduler agar enable/disable bebas race (abort tersedia).
+    pub sched_task: std::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
 }
 
 // Semua Tauri command ada di modul ini (bukan crate root) agar tidak bentrok
@@ -97,7 +99,7 @@ pub mod commands {
                 .unwrap_or(60),
             v.get("applicable_days")
                 .and_then(|x| x.as_str())
-                .unwrap_or("1,2,3,4,5"),
+                .unwrap_or("0,1,2,3,4"),
             v.get("version").and_then(|x| x.as_i64()).unwrap_or(1),
         ))
     }
@@ -197,7 +199,11 @@ pub mod commands {
         // Hari libur / libur mingguan bukan kemangkiran.
         let libur: i64 = r.query_one(
         "SELECT COUNT(*) FROM attendance_results WHERE work_date=?1 AND status IN ('Holiday','DayOff')", &[&d], |x| x.get(0))?.unwrap_or(0);
-        let tidak_hadir = (active_emp - hadir - cuti - libur).max(0);
+        // Barisan belum sah (jendela belum berakhir / butuh review) BUKAN
+        // mangkiran — jangan dimasukkan "tidak hadir".
+        let belum_lengkap: i64 = r.query_one(
+        "SELECT COUNT(*) FROM attendance_results WHERE work_date=?1 AND status IN ('Incomplete','NeedsReview')", &[&d], |x| x.get(0))?.unwrap_or(0);
+        let tidak_hadir = (active_emp - hadir - cuti - libur - belum_lengkap).max(0);
         let dev_total = q("SELECT COUNT(*) FROM devices WHERE is_active=1");
         let dev_online = q("SELECT COUNT(*) FROM devices WHERE is_active=1 AND status='online'");
         let dev_offline = q("SELECT COUNT(*) FROM devices WHERE is_active=1 AND status='offline'");
@@ -237,6 +243,17 @@ pub mod commands {
 
     // ---------- generic table API (dengan permission) ----------
     fn check_table_perm(s: &auth::Session, table: &str, write: bool) -> AppResult<()> {
+        // Tabel hasil mesin/audit/pengaturan tidak pernah diizinkan lewat CRUD
+        // generik — wajib lewat command khusus (engine/correction/requeue/
+        // insert_audit/settings_set) dengan permission masing-masing.
+        if matches!(
+            table,
+            "attendance_results" | "raw_events" | "audit_log" | "app_settings"
+        ) {
+            return Err(AppError::Forbidden(format!(
+                "tabel {table} hanya diubah via sistem, tidak via CRUD generik"
+            )));
+        }
         let need = match table {
             "employees" | "branches" | "departments" | "positions" | "employee_device_map" => {
                 if write {
@@ -259,7 +276,6 @@ pub mod commands {
                     "shift.view"
                 }
             }
-            "attendance_results" | "raw_events" => "attendance.view",
             "leave_requests" | "overtime_requests" | "leave_types" => {
                 if write {
                     "leave.manage"
@@ -652,6 +668,21 @@ pub mod commands {
     ) -> Result<serde_json::Value, AppError> {
         let s = require(&state, &token, "attendance.view")?;
         check_table_perm(&s, &table, true)?;
+        // Tabel mesin/audit bersifat append-only atau ditulis oleh mesin:
+        // dilarang lewat CRUD generik (integritas data + audit).
+        if matches!(
+            table.as_str(),
+            "attendance_results" | "raw_events" | "audit_log"
+        ) {
+            return Err(AppError::Forbidden(
+                "tabel ini hanya ditulis oleh sistem (mesin/correction/audit), bukan via UI".into(),
+            ));
+        }
+        if table == "app_settings" {
+            return Err(AppError::Validation(
+                "pengaturan diubah via menu Pengaturan".into(),
+            ));
+        }
         let cols = columns_of(&table)?;
         if table == "users" {
             return create_user(&state, &s, &data);
@@ -771,6 +802,14 @@ pub mod commands {
             sets.push(format!("{k}=?"));
             vals.push(match v {
                 serde_json::Value::String(x) => x,
+                // Bool → 1/0 (kolom INTEGER): "true"/"false" merusak filter is_active.
+                serde_json::Value::Bool(b) => {
+                    if b {
+                        "1".into()
+                    } else {
+                        "0".into()
+                    }
+                }
                 x => x.to_string(),
             });
         }
@@ -810,6 +849,80 @@ pub mod commands {
         Ok(())
     }
 
+    /// Guard update pengguna: larang ubah role/nonaktif akun sendiri, dan
+    /// larang menurunkan/menonaktifkan super_admin terakhir.
+    fn guard_user_update(
+        repo: &Repo,
+        requester: &auth::Session,
+        target_id: &str,
+        data: &serde_json::Value,
+    ) -> AppResult<()> {
+        let target: Option<(String, String)> = repo.query_one(
+            "SELECT username, role FROM users WHERE id=?1",
+            &[&target_id.to_string()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        let Some((uname, urole)) = target else {
+            return Err(AppError::NotFound("pengguna".into()));
+        };
+        let want_role_raw = data
+            .get("role")
+            .and_then(|v| v.as_str())
+            .map(|x| x.trim().to_string());
+        let want_role = match &want_role_raw {
+            Some(r) if r.is_empty() => None,
+            Some(r) => Some(r.clone()),
+            None => None,
+        };
+        if let Some(r) = &want_role {
+            if Role::from_code(r).is_none() {
+                return Err(AppError::Validation("role tidak dikenal".into()));
+            }
+        }
+        let want_active: Option<bool> = data.get("is_active").and_then(|v| match v {
+            serde_json::Value::Bool(b) => Some(*b),
+            serde_json::Value::String(x) => match x.as_str() {
+                "1" | "true" => Some(true),
+                "0" | "false" => Some(false),
+                _ => None,
+            },
+            _ => None,
+        });
+        if uname == requester.username {
+            if want_role.as_deref().map(|r| r != urole).unwrap_or(false) {
+                return Err(AppError::Forbidden(
+                    "ubah role akun sendiri tidak diizinkan (pakai admin lain)".into(),
+                ));
+            }
+            if want_active == Some(false) {
+                return Err(AppError::Forbidden(
+                    "nonaktifkan akun sendiri tidak diizinkan".into(),
+                ));
+            }
+        }
+        if urole == "super_admin"
+            && (want_role
+                .as_deref()
+                .map(|r| r != "super_admin")
+                .unwrap_or(false)
+                || want_active == Some(false))
+        {
+            let supers: i64 = repo
+                .query_one(
+                    "SELECT COUNT(*) FROM users WHERE role='super_admin'",
+                    &[],
+                    |r| r.get(0),
+                )?
+                .unwrap_or(0);
+            if supers <= 1 {
+                return Err(AppError::Forbidden(
+                    "super_admin terakhir tidak boleh diturunkan/dinonaktifkan".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn validate_required(table: &str, data: &serde_json::Value) -> AppResult<()> {
         for n in required_columns(table) {
             let empty = data
@@ -830,6 +943,60 @@ pub mod commands {
         }
         if table == "shifts" {
             validate_shift_times(data)?;
+        }
+        // Tanggal & angka protek awal: tulisan tidak-semak masuk DB sampai
+        // merusak perhitungan (mis. rentang izin terbalik → saldo minus).
+        const DATE_COLS: &[(&str, &[&str])] = &[
+            ("leave_requests", &["start_date", "end_date"]),
+            ("holidays", &["holiday_date"]),
+            ("work_calendar", &["work_date"]),
+            ("overtime_requests", &["work_date"]),
+            ("employees", &["hire_date"]),
+        ];
+        if let Some((_, cols)) = DATE_COLS.iter().find(|(t, _)| *t == table) {
+            for c in *cols {
+                if let Some(v) = data.get(*c).and_then(|x| x.as_str()) {
+                    if !v.is_empty() {
+                        parse_date(v)?;
+                    }
+                }
+            }
+        }
+        if table == "leave_requests" {
+            let s = data
+                .get("start_date")
+                .and_then(|x| x.as_str())
+                .unwrap_or("");
+            let e = data.get("end_date").and_then(|x| x.as_str()).unwrap_or("");
+            if !s.is_empty() && !e.is_empty() && parse_date(e)? < parse_date(s)? {
+                return Err(AppError::Validation(
+                    "tanggal akhir izin tidak boleh sebelum mulai".into(),
+                ));
+            }
+        }
+        if table == "overtime_requests" {
+            if let Some(v) = data.get("minutes_requested") {
+                let as_i64 = |s: &str| s.trim().parse::<i64>().ok();
+                let minutes: Option<i64> = match v {
+                    serde_json::Value::Number(n) => n.as_i64(),
+                    serde_json::Value::String(s) => as_i64(s),
+                    _ => None,
+                };
+                if minutes.map(|m| m < 0).unwrap_or(false) {
+                    return Err(AppError::Validation(
+                        "menit lembur tidak boleh negatif".into(),
+                    ));
+                }
+            }
+        }
+        if table == "work_calendar" {
+            if let Some(k) = data.get("kind").and_then(|x| x.as_str()) {
+                if !matches!(k, "kerja" | "libur") {
+                    return Err(AppError::Validation(
+                        "jenis hari kalender hanya kerja|libur (setengah belum didukung)".into(),
+                    ));
+                }
+            }
         }
         Ok(())
     }
@@ -907,15 +1074,28 @@ pub mod commands {
         let s = require(&state, &token, "attendance.view")?;
         check_table_perm(&s, &table, true)?;
         let cols = columns_of(&table)?;
-        if table == "attendance_results" {
-            return Err(AppError::Forbidden(
-                "gunakan correction untuk mengubah hasil absensi (audit wajib)".into(),
+        if matches!(
+            table.as_str(),
+            "attendance_results" | "raw_events" | "audit_log"
+        ) {
+            return Err(AppError::Forbidden(format!(
+                "tabel {table} tidak boleh diubah via UI (guard integritas)"
+            )));
+        }
+        if table == "app_settings" {
+            return Err(AppError::Validation(
+                "pengaturan diubah via menu Pengaturan, bukan via CRUD generik".into(),
             ));
         }
         if table == "users" && s.role != Role::SuperAdmin {
             return Err(AppError::Forbidden(
                 "hanya super_admin yang boleh kelola pengguna".into(),
             ));
+        }
+        if table == "users" {
+            // Guard super_admin terakhir: larang menurunkan role / menonaktifkan
+            // akun bila target adalah super_admin terakhir (atau diri sendiri).
+            guard_user_update(&state.repo, &s, &id, &data)?;
         }
         if table == "shifts" {
             validate_shift_times(&data)?;
@@ -977,15 +1157,35 @@ pub mod commands {
             state
                 .repo
                 .exec("UPDATE shifts SET version=version+1 WHERE id=?1", &[&id])?;
-            let payload: String = state
+            // Susun payload di Rust dengan serde_json agar karakter like "
+            // dalam kode/nama tidak merusak JSON (printf SQL dulu tidak
+            // meng-escape).
+            let fields: Option<(String, String, String, String, i64, i64)> = state
                 .repo
                 .query_one(
-                    "SELECT printf('{\"code\":\"%s\",\"name\":\"%s\",\"start\":\"%s\",\"end\":\"%s\",\"cross\":%d,\"tol\":%d}',
-                     code, name, start_time, end_time, crosses_midnight, late_tolerance_minutes)
-                     FROM shifts WHERE id=?1",
+                    "SELECT code, name, start_time, end_time, crosses_midnight, late_tolerance_minutes FROM shifts WHERE id=?1",
                     &[&id],
-                    |r| r.get(0),
-                )?
+                    |r| {
+                        Ok(
+                            (
+                                r.get(0)?,
+                                r.get(1)?,
+                                r.get(2)?,
+                                r.get(3)?,
+                                r.get(4)?,
+                                r.get(5)?,
+                            ),
+                        )
+                    },
+                )?;
+            let payload = fields
+                .map(|(code, name, start, end, cross, tol)| {
+                    serde_json::json!({
+                        "code": code, "name": name, "start": start, "end": end,
+                        "cross": cross, "tol": tol,
+                    })
+                    .to_string()
+                })
                 .unwrap_or_else(|| "{}".into());
             let ver: i64 = state
                 .repo
@@ -1003,6 +1203,10 @@ pub mod commands {
         state
             .repo
             .insert_audit(&s.username, "update", &table, &id, "")?;
+        if table == "users" {
+            // Role/password/is_active bisa berubah: tanggalkan sesi lama.
+            state.sessions.invalidate_user(&id);
+        }
         Ok("ok".into())
     }
 
@@ -1053,6 +1257,10 @@ pub mod commands {
             &id,
             if hard { "hard" } else { "soft" },
         )?;
+        if table == "users" {
+            // Akun terhapus: tanggalkan semua sesinya.
+            state.sessions.invalidate_user(&id);
+        }
         Ok("ok".into())
     }
 
@@ -1123,6 +1331,13 @@ pub mod commands {
     ) -> Result<serde_json::Value, AppError> {
         let _s = require(&state, &token, "sync.*")
             .or_else(|_| require(&state, &token, "device.manage"))?;
+        // Kunci yang sama dengan sync_run_all/scheduler: tanpa ini, sync
+        // manual bisa diselangkan dengan putaran otomatis (checkpoint ganda).
+        let Ok(_guard) = sync_lock().try_lock() else {
+            return Err(AppError::Conflict(
+                "sinkronisasi sedang berjalan, coba lagi".into(),
+            ));
+        };
         let (adapter_name, config_json): (String, String) = state
             .repo
             .query_one(
@@ -1138,7 +1353,13 @@ pub mod commands {
     }
 
     #[tauri::command]
-    pub fn device_registry() -> Result<serde_json::Value, AppError> {
+    pub fn device_registry(
+        state: tauri::State<AppState>,
+        token: String,
+    ) -> Result<serde_json::Value, AppError> {
+        // Info adapter = data produk/SDK: tetap butuh sesi (konsisten
+        // command info lain; dulu tanpa auth — bisa excavator pre-login).
+        require(&state, &token, "device.view")?;
         Ok(serde_json::to_value(devices::registry::DeviceRegistry::entries()).unwrap())
     }
 
@@ -1207,11 +1428,14 @@ pub mod commands {
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?.unwrap_or((1, 1));
         let wd = check_work_date(&work_date)?;
+        // Tanggal kanonikal zero-padded untuk semua pembanding TEXT di SQL
+        // (kolom tanggal/format id) — jangan pakai input mentah pemanggil.
+        let date_s = wd.format("%Y-%m-%d").to_string();
         let is_holiday: bool = state
             .repo
             .query_one(
                 "SELECT COUNT(*) FROM holidays WHERE holiday_date=?1",
-                &[&work_date],
+                &[&date_s],
                 |r| {
                     let n: i64 = r.get(0)?;
                     Ok(n > 0)
@@ -1221,11 +1445,12 @@ pub mod commands {
         let mut done = 0i64;
         let mut skipped_no_schedule = 0i64;
         let mut skipped_invalid = 0i64;
+        let mut skipped_waiting = 0i64;
         for (eid,) in emps {
             // assignment efektif terbaru
             let shift_id: Option<(String,)> = state.repo.query_one(
             "SELECT shift_id FROM shift_assignments WHERE employee_id=?1 AND effective_date<=?2 AND (end_date IS NULL OR end_date>=?2) ORDER BY effective_date DESC LIMIT 1",
-            &[&eid, &work_date],
+            &[&eid, &date_s],
             |r| Ok((r.get(0)?,)),
         )?;
             let shift_id = match shift_id {
@@ -1273,7 +1498,7 @@ pub mod commands {
             for du in &maps {
                 let rows: Vec<(String, String)> = state.repo.query_rows(
                 "SELECT id, event_time FROM raw_events WHERE device_user_id=?1 AND event_time >= ?2 AND event_time <= ?3 ORDER BY event_time",
-                &[du, &format!("{work_date} 00:00:00"), &format!("{} 23:59:59", (wd + chrono::Duration::days(1)).format("%Y-%m-%d"))],
+                &[du, &format!("{date_s} 00:00:00"), &format!("{} 23:59:59", (wd + chrono::Duration::days(1)).format("%Y-%m-%d"))],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )?;
                 for (rid, t) in rows {
@@ -1288,6 +1513,7 @@ pub mod commands {
                 }
             }
             let ev_times: Vec<chrono::NaiveDateTime> = ev_all.iter().map(|(_, dt)| *dt).collect();
+            let ev_cnt = ev_times.len();
             let grouped = attendance::group_events_for_shift(&shift, &wd, ev_times);
             // Hanya event di dalam window shift yang ditandai processed;
             // sisanya tetap untuk tanggal/shift lain.
@@ -1299,19 +1525,19 @@ pub mod commands {
                 .collect();
             let on_leave_set: Vec<String> = state.repo.query_rows(
             "SELECT lt.code FROM leave_requests lr JOIN leave_types lt ON lt.id=lr.leave_type_id WHERE lr.employee_id=?1 AND lr.status='approved' AND lr.start_date<=?2 AND lr.end_date>=?2",
-            &[&eid, &work_date], |r| r.get(0))?;
+            &[&eid, &date_s], |r| r.get(0))?;
             let on_leave = on_leave_set.iter().any(|c| c != "IZIN");
             let on_permission = on_leave_set.iter().any(|c| c == "IZIN");
             let cal_kind: Option<String> = state.repo.query_one(
                 "SELECT kind FROM work_calendar WHERE work_date=?1",
-                &[&work_date],
+                &[&date_s],
                 |r| r.get(0),
             )?;
             let is_day_off = matches!(cal_kind.as_deref(), Some(k) if k != "kerja")
                 || !shift.applies_to_weekday(&wd);
             let ot_appr: i64 = state.repo.query_one(
             "SELECT COALESCE(SUM(minutes_requested),0) FROM overtime_requests WHERE employee_id=?1 AND work_date=?2 AND status='approved'",
-            &[&eid, &work_date], |r| r.get(0))?.unwrap_or(0);
+            &[&eid, &date_s], |r| r.get(0))?.unwrap_or(0);
             let inp = attendance::ComputeInput {
                 work_date: wd,
                 shift: shift.clone(),
@@ -1325,12 +1551,22 @@ pub mod commands {
                 require_overtime_approval: policy.1 != 0,
             };
             let o = attendance::compute_day(&inp);
-            let id = format!("{eid}-{work_date}");
+            // Jujur dihitung: hari belum selesai (jendela shift belum
+            // berakhir) dan tanpa event — jangan tulis "Absent" sedari awal;
+            // biarkan belum dihitung dan hitung ulang nanti (atau besok).
+            if o.status == attendance::AttendanceStatus::Absent
+                && ev_cnt == 0
+                && latest_out > timex::now_wib_naive()
+            {
+                skipped_waiting += 1;
+                continue;
+            }
+            let id = format!("{eid}-{date_s}");
             state.repo.exec(
             "INSERT INTO attendance_results (id, employee_id, work_date, shift_id, shift_version, clock_in, clock_out, work_minutes, break_minutes, late_minutes, early_leave_minutes, overtime_minutes, overtime_approved, status, anomaly, source, computed_at)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
              ON CONFLICT(employee_id, work_date) DO UPDATE SET shift_id=excluded.shift_id, shift_version=excluded.shift_version, clock_in=excluded.clock_in, clock_out=excluded.clock_out, work_minutes=excluded.work_minutes, break_minutes=excluded.break_minutes, late_minutes=excluded.late_minutes, early_leave_minutes=excluded.early_leave_minutes, overtime_minutes=excluded.overtime_minutes, overtime_approved=excluded.overtime_approved, status=excluded.status, anomaly=excluded.anomaly, source=excluded.source, computed_at=excluded.computed_at",
-            &[&id, &eid, &work_date, &shift_id, &shift.version.to_string(),
+            &[&id, &eid, &date_s, &shift_id, &shift.version.to_string(),
               &o.clock_in.unwrap_or_default(), &o.clock_out.unwrap_or_default(),
               &o.work_minutes.to_string(), &o.break_minutes.to_string(), &o.late_minutes.to_string(),
               &o.early_leave_minutes.to_string(), &o.overtime_minutes.to_string(),
@@ -1348,12 +1584,13 @@ pub mod commands {
             }
             done += 1;
         }
-        log::info!("hitung absensi {work_date}: {done} karyawan");
+        log::info!("hitung absensi {date_s}: {done} karyawan");
         Ok(serde_json::json!({
             "computed": done,
-            "date": work_date,
+            "date": date_s,
             "skipped_no_schedule": skipped_no_schedule,
             "skipped_invalid_time": skipped_invalid,
+            "skipped_window_not_ended": skipped_waiting,
         }))
     }
 
@@ -1559,8 +1796,18 @@ pub mod commands {
 
     // ---------- jadwal shift ----------
     fn parse_date(s: &str) -> AppResult<chrono::NaiveDate> {
-        chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
-            .map_err(|_| AppError::Validation(format!("tanggal harus YYYY-MM-DD: {s}")))
+        let s2 = s.trim();
+        let d = chrono::NaiveDate::parse_from_str(s2, "%Y-%m-%d")
+            .map_err(|_| AppError::Validation(format!("tanggal harus YYYY-MM-DD: {s}")))?;
+        // Tolak format longgar (mis. "2026-1-5"): semua pembanding SQL pada
+        // kolom TEXT tanggal mengandalkan bentuk zero-padded — bentuk longgar
+        // membuat event/jadwal tidak cocok & id hasil absen tergandakan.
+        if d.format("%Y-%m-%d").to_string() != s2 {
+            return Err(AppError::Validation(format!(
+                "tanggal harus YYYY-MM-DD zero-padded: {s}"
+            )));
+        }
+        Ok(d)
     }
 
     /// Tanggal kerja tidak boleh masa depan: hari yang belum selesai
@@ -1650,16 +1897,48 @@ pub mod commands {
         approve: bool,
         username: &str,
     ) -> AppResult<()> {
-        let row: Option<(String, String, String, String)> = repo.query_one(
-            "SELECT employee_id, to_shift_id, swap_date, status FROM shift_swaps WHERE id=?1",
+        let row: Option<(String, String, String, String, Option<String>)> = repo.query_one(
+            "SELECT employee_id, to_shift_id, swap_date, status, from_assignment_id FROM shift_swaps WHERE id=?1",
             &[&swap_id.to_string()],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )?;
-        let Some((eid, to_sid, sdate, status)) = row else {
+        let Some((eid, to_sid, sdate, status, from_assign)) = row else {
             return Err(AppError::NotFound("pengajuan tukar".into()));
         };
         if status != "pending" {
             return Err(AppError::Conflict("pengajuan sudah diputuskan".into()));
+        }
+        if approve {
+            // Shift tujuan harus ada (hindari FK error cryptic).
+            let to_ok: Option<String> = repo.query_one(
+                "SELECT id FROM shifts WHERE id=?1",
+                &[&to_sid.to_string()],
+                |r| r.get(0),
+            )?;
+            if to_ok.is_none() {
+                return Err(AppError::Conflict(
+                    "shift tujuan tidak ada/rusak, tolak pengajuan ini".into(),
+                ));
+            }
+            // Anti-bentrok (aturan sama dengan penugasan massal): karyawan
+            // tidak boleh punya dua shift efektif berbeda per tanggal.
+            // Shift asal yang digantikan dikecualikan.
+            let sdate_c = parse_date(&sdate)
+                .map(|d| d.format("%Y-%m-%d").to_string())
+                .unwrap_or_else(|_| sdate.clone());
+            let fa = from_assign.clone().unwrap_or_default();
+            let clash: i64 = repo
+                .query_one(
+                    "SELECT COUNT(*) FROM shift_assignments WHERE employee_id=?1 AND shift_id<>?2 AND id<>COALESCE(?3,'') AND effective_date<=?4 AND COALESCE(end_date,'9999-12-31')>=?4",
+                    &[&eid, &to_sid, &fa, &sdate_c],
+                    |r| r.get(0),
+                )?
+                .unwrap_or(0);
+            if clash > 0 {
+                return Err(AppError::Conflict(format!(
+                    "penugasan lain berbentrok pada {sdate_c}; perbaiki jadwal dulu"
+                )));
+            }
         }
         let ts = now();
         let new_status = if approve { "approved" } else { "rejected" };
@@ -1978,7 +2257,26 @@ pub mod commands {
         reason: String,
     ) -> Result<serde_json::Value, AppError> {
         let s = require(&state, &token, "shift.manage")?;
-        parse_date(&swap_date)?;
+        let swap_date_canon = parse_date(&swap_date)?.format("%Y-%m-%d").to_string();
+        // Periksa eksistensi shift tujuan (tanpa itu, approve akan gagal FK
+        // dengan pesan cryptic).
+        let to_exists: Option<String> =
+            state
+                .repo
+                .query_one("SELECT id FROM shifts WHERE id=?1", &[&to_shift_id], |r| {
+                    r.get(0)
+                })?;
+        if to_exists.is_none() {
+            return Err(AppError::NotFound("shift tujuan".into()));
+        }
+        let emp_exists: Option<String> = state.repo.query_one(
+            "SELECT id FROM employees WHERE id=?1",
+            &[&employee_id],
+            |r| r.get(0),
+        )?;
+        if emp_exists.is_none() {
+            return Err(AppError::NotFound("karyawan".into()));
+        }
         if from_shift_id == to_shift_id {
             return Err(AppError::Validation("shift asal dan tujuan sama".into()));
         }
@@ -1989,7 +2287,7 @@ pub mod commands {
             .repo
             .query_one(
                 "SELECT id FROM shift_assignments WHERE employee_id=?1 AND shift_id=?2 AND effective_date<=?3 AND (end_date IS NULL OR end_date>=?3) ORDER BY effective_date DESC LIMIT 1",
-                &[&employee_id, &from_shift_id, &swap_date],
+                &[&employee_id, &from_shift_id, &swap_date_canon],
                 |r| r.get(0),
             )?;
         let id = uid();
@@ -2002,7 +2300,7 @@ pub mod commands {
                 &from_assign,
                 &from_shift_id,
                 &to_shift_id,
-                &swap_date,
+                &swap_date_canon,
                 &reason,
                 &now(),
             ],
@@ -2012,7 +2310,7 @@ pub mod commands {
             "swap_request",
             "shift_swaps",
             &id,
-            &format!("{employee_id} {from_shift_id}->{to_shift_id} @ {swap_date}"),
+            &format!("{employee_id} {from_shift_id}->{to_shift_id} @ {swap_date_canon}"),
         )?;
         Ok(serde_json::json!({"id": id}))
     }
@@ -2122,17 +2420,24 @@ pub mod commands {
         state
             .sched_enabled
             .store(enabled, std::sync::atomic::Ordering::Relaxed);
-        if enabled
-            && !state
-                .sched_running
-                .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            state
-                .sched_running
-                .store(true, std::sync::atomic::Ordering::Relaxed);
+        // Kepemilikan task eksplisit: enable → task lama di-abort lalu task
+        // baru di-spawn; disable → abort segera. Tidak ada race "running
+        // masih true karena task lama belum sempat menyimpan false" seperti
+        // versi dua-boolean sebelumnya.
+        let mut slot = state
+            .sched_task
+            .lock()
+            .map_err(|_| AppError::Device("scheduler lock poisoned".into()))?;
+        if let Some(h) = slot.take() {
+            h.abort();
+        }
+        state
+            .sched_running
+            .store(enabled, std::sync::atomic::Ordering::Relaxed);
+        if enabled {
             let running = state.sched_running.clone();
             let flag = state.sched_enabled.clone();
-            tauri::async_runtime::spawn(async move {
+            *slot = Some(tauri::async_runtime::spawn(async move {
                 loop {
                     let interval: u64 = app
                         .state::<AppState>()
@@ -2219,7 +2524,7 @@ pub mod commands {
                     }
                 }
                 running.store(false, std::sync::atomic::Ordering::Relaxed);
-            });
+            }));
         }
         Ok("ok".into())
     }
@@ -2530,45 +2835,89 @@ pub mod commands {
         pub employee_id: String,
     }
 
+    /// Tambah kondisi SQL + argumen sekaligus: nilai kosong dilewati,
+    /// placeholder ?N disesuaikan dengan jumlah argumen saat ini.
+    fn cond_args_pair(cond: &mut Vec<String>, args: &mut Vec<String>, clause: &str, value: &str) {
+        if value.trim().is_empty() {
+            return;
+        }
+        cond.push(format!("{clause}?{}", args.len() + 1));
+        args.push(value.to_string());
+    }
+
     fn report_data(
         repo: &Repo,
         kind: &str,
         f: &ReportFilter,
     ) -> AppResult<(Vec<String>, Vec<Vec<String>>)> {
-        let mut cond = vec!["a.work_date>=?1".to_string(), "a.work_date<=?2".to_string()];
-        let mut args: Vec<String> = vec![f.start.clone(), f.end.clone()];
-        let mut push = |c: &str, v: &str| {
-            if !v.is_empty() {
-                cond.push(c.to_string());
-                args.push(v.to_string());
-            }
+        // Validasi & normalisasi rentang tanggal (zero-padded, urut benar).
+        let ds = parse_date(&f.start)?;
+        let de = parse_date(&f.end)?;
+        if de < ds {
+            return Err(AppError::Validation("rentang tanggal terbalik".into()));
+        }
+        let start_s = ds.format("%Y-%m-%d").to_string();
+        let end_s = de.format("%Y-%m-%d").to_string();
+        let mut cond: Vec<String> = vec![];
+        let mut args: Vec<String> = vec![];
+        // Kondisi + argumen dibangun bersama: placeholder ?N dipasangkan dengan
+        // posisi argumennya (pengikat rusqlite menuntut jumlah yang sama).
+        cond_args_pair(&mut cond, &mut args, "a.work_date>=", &start_s);
+        cond_args_pair(&mut cond, &mut args, "a.work_date<=", &end_s);
+        // Filter khusus jenis laporan (jujur: label menuntut data relevan).
+        let extra_cond: Vec<&str> = match kind {
+            "terlambat" => vec!["a.late_minutes>0"],
+            "pulang_cepat" => vec!["a.early_leave_minutes>0"],
+            "lembur" => vec!["a.overtime_minutes>0"],
+            "tidak_hadir" => vec!["a.status='Absent'"],
+            "izin_cuti" => vec!["a.status IN ('Leave','Permission')"],
+            _ => vec![],
         };
-        push("e.branch_id=?", f.branch_id.as_str());
-        push("e.department_id=?", f.department_id.as_str());
-        push("a.shift_id=?", f.shift_id.as_str());
-        push("a.status=?", f.status.as_str());
-        push("a.employee_id=?", f.employee_id.as_str());
-        let where_s = cond.join(" AND ");
+        cond_args_pair(&mut cond, &mut args, "e.branch_id=?", &f.branch_id);
+        cond_args_pair(&mut cond, &mut args, "e.department_id=?", &f.department_id);
+        cond_args_pair(&mut cond, &mut args, "a.shift_id=?", &f.shift_id);
+        cond_args_pair(&mut cond, &mut args, "a.status=?", &f.status);
+        cond_args_pair(&mut cond, &mut args, "a.employee_id=?", &f.employee_id);
         let base = match kind {
-        "harian" | "karyawan" | "departemen" | "cabang" | "shift" | "terlambat" | "pulang_cepat"
-        | "lembur" | "tidak_hadir" | "izin_cuti" | "rekon" => format!(
-            "SELECT a.work_date, e.nik, e.name, s.name, a.clock_in, a.clock_out, a.work_minutes, a.late_minutes, a.early_leave_minutes, a.overtime_minutes, a.status, a.anomaly
-             FROM attendance_results a JOIN employees e ON e.id=a.employee_id LEFT JOIN shifts s ON s.id=a.shift_id WHERE {where_s} ORDER BY a.work_date, e.name LIMIT 2000"),
-        "rekap_bulanan" => format!(
-            "SELECT substr(a.work_date,1,7), e.nik, e.name,
-                    COUNT(*),
-                    SUM(CASE WHEN a.status IN ('Present','Late') THEN 1 ELSE 0 END),
-                    SUM(CASE WHEN a.status='Late' THEN 1 ELSE 0 END),
-                    SUM(CASE WHEN a.status='Absent' THEN 1 ELSE 0 END),
-                    COALESCE(SUM(a.work_minutes),0), COALESCE(SUM(a.overtime_minutes),0)
-             FROM attendance_results a JOIN employees e ON e.id=a.employee_id LEFT JOIN shifts s ON s.id=a.shift_id WHERE {where_s} GROUP BY substr(a.work_date,1,7), e.id ORDER BY 1, e.name LIMIT 2000"),
-            "log_perangkat" => "SELECT event_time, device_id, device_user_id, direction, status FROM raw_events WHERE event_time>=?1 AND event_time<=?2 ORDER BY event_time LIMIT 2000".to_string(),
-        "error_sync" => "SELECT created_at, device_id, event, detail FROM device_connection_log ORDER BY created_at DESC LIMIT 500".to_string(),
-        "riwayat_koreksi" => "SELECT created_at, attendance_id, changed_by, field_name, old_value, new_value, reason FROM corrections_audit ORDER BY created_at DESC LIMIT 500".to_string(),
-        _ => return Err(AppError::Validation("jenis laporan tidak dikenal".into())),
-    };
+            "harian" | "karyawan" | "departemen" | "cabang" | "shift" | "terlambat" | "pulang_cepat"
+            | "lembur" | "tidak_hadir" | "izin_cuti" | "rekon" => format!(
+                "SELECT a.work_date, e.nik, e.name, s.name, a.clock_in, a.clock_out, a.work_minutes, a.late_minutes, a.early_leave_minutes, a.overtime_minutes, a.status, a.anomaly
+                 FROM attendance_results a JOIN employees e ON e.id=a.employee_id LEFT JOIN shifts s ON s.id=a.shift_id
+                 WHERE {} {} ORDER BY a.work_date, e.name LIMIT 2000",
+                cond.join(" AND "),
+                extra_cond.iter().map(|c| format!("AND {c}")).collect::<Vec<_>>().join(" ")),
+            "rekap_bulanan" => format!(
+                "SELECT substr(a.work_date,1,7), e.nik, e.name,
+                        COUNT(*),
+                        SUM(CASE WHEN a.status IN ('Present','Late') THEN 1 ELSE 0 END),
+                        SUM(CASE WHEN a.status='Late' THEN 1 ELSE 0 END),
+                        SUM(CASE WHEN a.status='Absent' THEN 1 ELSE 0 END),
+                        COALESCE(SUM(a.work_minutes),0), COALESCE(SUM(a.overtime_minutes),0)
+                 FROM attendance_results a JOIN employees e ON e.id=a.employee_id LEFT JOIN shifts s ON s.id=a.shift_id
+                 WHERE {} GROUP BY substr(a.work_date,1,7), e.id ORDER BY 1, e.name LIMIT 2000",
+                cond.join(" AND ")),
+            // Laporan log/mesin: filter karyawan/departemen/shift tidak berlaku
+            // (sumbernya bukan tabel hasil) — hanya rentang waktu yang dipakai.
+            "log_perangkat" => "SELECT event_time, device_id, device_user_id, direction, status FROM raw_events
+                  WHERE event_time>=?1 AND event_time<=?2 ORDER BY event_time LIMIT 2000"
+                .to_string(),
+            "error_sync" => "SELECT created_at, device_id, event, detail FROM device_connection_log
+                  WHERE created_at>=?1 AND created_at<=?2 ORDER BY created_at DESC LIMIT 500"
+                .to_string(),
+            "riwayat_koreksi" => "SELECT created_at, attendance_id, changed_by, field_name, old_value, new_value, reason FROM corrections_audit
+                  WHERE created_at>=?1 AND created_at<=?2 ORDER BY created_at DESC LIMIT 500"
+                .to_string(),
+            _ => return Err(AppError::Validation("jenis laporan tidak dikenal".into())),
+        };
+        // Tiga jenis log pakai rentang penuh hari pada kolom waktu (TEXT).
+        let exec_args: Vec<String> = match kind {
+            "log_perangkat" | "error_sync" | "riwayat_koreksi" => {
+                vec![format!("{start_s} 00:00:00"), format!("{end_s} 23:59:59")]
+            }
+            _ => args,
+        };
         // jalankan dengan params dinamis
-        let rows: Vec<Vec<String>> = query_dynamic(repo, &base, &args)?;
+        let rows: Vec<Vec<String>> = query_dynamic(repo, &base, &exec_args)?;
         let headers = match kind {
             "log_perangkat" => vec!["Waktu (WIB)", "Perangkat", "User Device", "Arah", "Status"],
             "error_sync" => vec!["Waktu (WIB)", "Perangkat", "Event", "Detail"],
@@ -2826,8 +3175,8 @@ pub mod commands {
         if (end - start).num_days() > 62 {
             return Err(AppError::Validation("rentang maksimal 62 hari".into()));
         }
-        let start_s = format!("{start_date} 00:00:00");
-        let end_s = format!("{end_date} 23:59:59");
+        let start_s = format!("{} 00:00:00", start.format("%Y-%m-%d"));
+        let end_s = format!("{} 23:59:59", end.format("%Y-%m-%d"));
         let n = state.repo.exec(
             "UPDATE raw_events SET status='pending' WHERE status='processed' AND event_time>=?1 AND event_time<=?2",
             &[&start_s, &end_s],
@@ -2925,6 +3274,61 @@ pub mod commands {
             &format!("{device_user_id} / {name}"),
         )?;
         Ok("ok".into())
+    }
+
+    // ---------- keputusan izin (leave.approve: supervisor dsb) ----------
+    /// Setujui/tolak pengajuan izin TANPA butuh leave.manage. Role dengan
+    /// leave.approve (supervisor) sebelumnya buntu: UI menawarkan ubah status
+    /// tapi generic table_update menuntut leave.manage (Forbidden selalu).
+    #[tauri::command]
+    pub fn leave_decide(
+        state: tauri::State<AppState>,
+        token: String,
+        request_id: String,
+        approve: bool,
+    ) -> Result<String, AppError> {
+        let s = require(&state, &token, "leave.approve")?;
+        apply_leave_decision(&state.repo, &request_id, approve, &s.username)?;
+        Ok("ok".into())
+    }
+
+    /// Inti keputusan izin/cuti: hanya pending yang boleh diputuskan sekali
+    /// (NotFound/Conflict dijaga), tulis status + approved_by + decided_at + audit.
+    fn apply_leave_decision(
+        repo: &Repo,
+        request_id: &str,
+        approve: bool,
+        actor: &str,
+    ) -> AppResult<()> {
+        let row: Option<String> = repo.query_one(
+            "SELECT status FROM leave_requests WHERE id=?1",
+            &[&request_id.to_string()],
+            |r| r.get(0),
+        )?;
+        let Some(status) = row else {
+            return Err(AppError::NotFound("pengajuan izin".into()));
+        };
+        if status != "pending" {
+            return Err(AppError::Conflict("pengajuan sudah diputuskan".into()));
+        }
+        let new_status = if approve { "approved" } else { "rejected" };
+        repo.exec(
+            "UPDATE leave_requests SET status=?1, approved_by=?2, decided_at=?3 WHERE id=?4",
+            &[
+                &new_status.to_string(),
+                &actor.to_string(),
+                &now(),
+                &request_id.to_string(),
+            ],
+        )?;
+        repo.insert_audit(
+            actor,
+            "leave_decide",
+            "leave_requests",
+            request_id,
+            new_status,
+        )?;
+        Ok(())
     }
 
     // ---------- saldo cuti ----------
@@ -3288,6 +3692,7 @@ pub mod commands {
                 db_path,
                 sched_enabled: std::sync::Arc::new(AtomicBool::new(false)),
                 sched_running: std::sync::Arc::new(AtomicBool::new(false)),
+                sched_task: std::sync::Mutex::new(None),
             }
         }
 
@@ -3558,6 +3963,62 @@ pub mod commands {
             assert!(apply_swap_decision(&st.repo, "sw2", true, "tester").is_err());
             // ID tak dikenal → NotFound.
             assert!(apply_swap_decision(&st.repo, "tidak-ada", true, "tester").is_err());
+        }
+
+        #[test]
+        fn leave_decide_pending_sekali_saja() {
+            let st = test_state();
+            st.repo
+                .exec(
+                    "INSERT INTO employees (id, nik, name, hire_date, status, created_at, updated_at)
+                     VALUES ('e1','N1','Uji','2024-01-01','aktif','2026-01-01 00:00:00','2026-01-01 00:00:00')",
+                    &[],
+                )
+                .unwrap();
+            st.repo
+                .exec(
+                    "INSERT INTO leave_types (id, code, name, created_at)
+                     VALUES ('lt1','CT','Cuti tahunan','2026-01-01 00:00:00')",
+                    &[],
+                )
+                .unwrap();
+            for (id, status) in [("l1", "pending"), ("l2", "approved")] {
+                st.repo
+                    .exec(
+                        "INSERT INTO leave_requests (id, employee_id, leave_type_id, start_date, end_date, status, created_at)
+                         VALUES (?1,'e1','lt1','2026-05-10','2026-05-11',?2,'2026-01-01 00:00:00')",
+                        &[&id.to_string(), &status.to_string()],
+                    )
+                    .unwrap();
+            }
+            // Setujui pengajuan pending: status + approved_by + decided_at terisi.
+            apply_leave_decision(&st.repo, "l1", true, "sup").unwrap();
+            let (status, approved_by): (String, String) = st
+                .repo
+                .query_one(
+                    "SELECT status, approved_by FROM leave_requests WHERE id='l1'",
+                    &[],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(status, "approved");
+            assert_eq!(approved_by, "sup");
+            let decided: Option<String> = st
+                .repo
+                .query_one(
+                    "SELECT decided_at FROM leave_requests WHERE id='l1'",
+                    &[],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(decided.is_some());
+            // Keputusan kedua → Conflict.
+            assert!(apply_leave_decision(&st.repo, "l1", true, "sup").is_err());
+            // Yang sudah approved tidak boleh disentuh lagi → Conflict.
+            assert!(apply_leave_decision(&st.repo, "l2", false, "sup").is_err());
+            // ID tak dikenal → NotFound.
+            assert!(apply_leave_decision(&st.repo, "tidak-ada", true, "sup").is_err());
         }
 
         #[test]

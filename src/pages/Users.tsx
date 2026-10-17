@@ -14,8 +14,12 @@ const USER: Column[] = [
       { value: 'viewer', label: 'Viewer/Auditor' },
     ],
   },
-  { key: 'password', label: 'Password baru (kosong = tidak diubah)', type: 'password', hideInTable: true },
-  { key: 'is_active', label: 'Aktif', type: 'select', options: [{ value: '1', label: 'Ya' }, { value: '0', label: 'Tidak' }] },
+  {
+    key: 'password',
+    label: 'Password (wajib saat tambah; saat ubah kosong = tidak diubah)',
+    type: 'password', hideInTable: true, requiredOnCreate: true,
+  },
+  { key: 'is_active', label: 'Aktif', type: 'select', editOnly: true, options: [{ value: '1', label: 'Ya' }, { value: '0', label: 'Tidak' }] },
 ];
 
 const AUDIT: Column[] = [

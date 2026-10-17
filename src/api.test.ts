@@ -50,6 +50,13 @@ describe('kontrak IPC: kunci argumen harus snake_case persis backend', () => {
     await expectKeys(() => api.deviceFetchUsers('d1'), 'device_fetch_users', ['token', 'device_id']);
     await expectKeys(() => api.deviceProvisionUser('d1', 'u', 'n'), 'device_provision_user',
       ['token', 'device_id', 'device_user_id', 'name']);
+    await expectKeys(() => api.deviceRegistry('t'), 'device_registry', ['token']);
+  });
+  it('izin & cuti', async () => {
+    await expectKeys(() => api.leaveBalances(), 'leave_balances', ['token']);
+    await expectKeys(() => api.leaveDecide('r1', true), 'leave_decide', ['token', 'request_id', 'approve']);
+    await expectKeys(() => api.saveLeaveAttachment('r1', 'p'), 'save_leave_attachment',
+      ['token', 'request_id', 'src_path']);
   });
   it('absensi + koreksi', async () => {
     await expectKeys(() => api.attendanceCompute('2026-10-14', 'e1'), 'attendance_compute',
@@ -84,8 +91,6 @@ describe('kontrak IPC: kunci argumen harus snake_case persis backend', () => {
   it('file + lain-lain', async () => {
     await expectKeys(() => api.saveEmployeePhoto('e', 'p'), 'save_employee_photo',
       ['token', 'employee_id', 'src_path']);
-    await expectKeys(() => api.saveLeaveAttachment('r', 'p'), 'save_leave_attachment',
-      ['token', 'request_id', 'src_path']);
   });
 });
 

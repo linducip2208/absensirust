@@ -9,7 +9,7 @@ const HOLIDAY: Column[] = [
 ];
 const CAL: Column[] = [
   { key: 'work_date', label: 'Tanggal', type: 'date', required: true },
-  { key: 'kind', label: 'Jenis', type: 'select', required: true, options: [{ value: 'kerja', label: 'Kerja' }, { value: 'libur', label: 'Libur' }, { value: 'setengah', label: 'Setengah hari' }] },
+  { key: 'kind', label: 'Jenis', type: 'select', required: true, options: [{ value: 'kerja', label: 'Kerja' }, { value: 'libur', label: 'Libur' }] },
   { key: 'description', label: 'Keterangan' },
 ];
 

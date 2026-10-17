@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
-import { api, DeviceUser, RegistryEntry, Row, SdkStatus, SyncStats } from '../api';
+import { api, DeviceUser, getToken, RegistryEntry, Row, SdkStatus, SyncStats } from '../api';
 import Crud, { Column } from '../components/Crud';
 import Layout from '../components/Layout';
 import { EmptyState, Field, LoadingState, StatusBadge, useToast } from '../components/ui';
@@ -50,10 +50,18 @@ export default function Devices() {
   const [lastStats, setLastStats] = useState<SyncStats | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [logs, setLogs] = useState<Row[]>([]);
+  const [registryErr, setRegistryErr] = useState('');
+  const [sdkErr, setSdkErr] = useState('');
 
   useEffect(() => {
-    api.deviceRegistry().then(setRegistry).catch((e: Error) => toast.push('error', e.message));
-    api.deviceSdkStatus().then(setSdk).catch(() => setSdk([]));
+    api.deviceRegistry(getToken()).then(setRegistry).catch((e: Error) => {
+      // Gagal muat registry: tampilkan pesan jelas, bukan "Memuat" abadi.
+      setRegistryErr(e.message);
+    });
+    api.deviceSdkStatus().then(setSdk).catch((e: Error) => {
+      setSdkErr(e.message);
+      setSdk([]);
+    });
   }, []);
 
   const test = async (id: string) => {
@@ -77,7 +85,8 @@ export default function Devices() {
       setLastStats(stats);
       toast.push(
         'success',
-        `Sync ${id}: ${stats.inserted} baru, ${stats.duplicates} duplikat, ${stats.unmapped} tanpa mapping`,
+        `Sync ${id}: ${stats.inserted} baru, ${stats.duplicates} duplikat, ${stats.unmapped} tanpa mapping` +
+          (stats.failed > 0 ? `, ${stats.failed} BARIS KORUP DILEWATI` : ''),
       );
       setRefreshKey((k) => k + 1);
     } catch (e) {
@@ -114,7 +123,14 @@ export default function Devices() {
           <table className="table card-table table-vcenter">
             <thead><tr><th>Adapter</th><th>Vendor</th><th>Model</th><th>SDK</th><th>Operasi</th><th>Status uji</th><th>Kekurangan</th></tr></thead>
             <tbody>
-              {registry.length === 0 && (
+              {registryErr && (
+                <tr>
+                  <td colSpan={7}>
+                    <EmptyState title="Registry gagal dimuat" hint={registryErr} />
+                  </td>
+                </tr>
+              )}
+              {!registryErr && registry.length === 0 && (
                 <tr><td colSpan={7}><EmptyState title="Memuat registry…" hint="" /></td></tr>
               )}
               {registry.map((r) => (
@@ -152,6 +168,7 @@ export default function Devices() {
             </tbody>
           </table>
         </div>
+        {sdkErr && <div className="alert alert-danger m-3 mb-0">Status DLL gagal dimuat: {sdkErr}</div>}
         <div className="card-footer text-secondary">
           Taruh DLL di folder exe, <code>exe/sdk</code>, atau <code>%APPDATA%\AttendX\sdk</code>.
           ZKTeco/Solution butuh registrasi sekali (Administrator): <code>regsvr32 zkemkeeper.dll</code>.
@@ -165,7 +182,7 @@ export default function Devices() {
       <div className="card mt-3">
         <div className="card-header"><h3 className="card-title">Uji & sinkronisasi cepat</h3></div>
         <div className="card-body">
-          <DeviceActions onTest={test} onSync={sync} testing={testing} syncing={syncing} />
+          <DeviceActions key={refreshKey} onTest={test} onSync={sync} testing={testing} syncing={syncing} />
           {lastStats && (
             <div className="alert alert-info mt-3 mb-0">
               Terakhir: {lastStats.device_id} — fetch {lastStats.fetched}, baru {lastStats.inserted},
@@ -192,7 +209,7 @@ export default function Devices() {
           )}
         </div>
       </div>
-      <DeviceUsers />
+      <DeviceUsers key={refreshKey} />
     </Layout>
   );
 }

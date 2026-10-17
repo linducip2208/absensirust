@@ -109,13 +109,33 @@ fn login(
             unsafe { e() }
         )));
     }
-    let set_time: libloading::Symbol<FnSetConnectTime> = sym(lib, b"NET_DVR_SetConnectTime")?;
+    let set_time: libloading::Symbol<FnSetConnectTime> = match sym(lib, b"NET_DVR_SetConnectTime") {
+        Ok(s) => s,
+        Err(e) => {
+            // Init sudah sukses: simetriskan dengan Cleanup bila langkah
+            // selanjutnya gagal AGAR SDK tak setengah-terinisialisasi.
+            let _ = cleanup(lib);
+            return Err(e);
+        }
+    };
     let wait = timeout.as_secs().clamp(2, 30) as u32;
     unsafe {
         set_time(wait * 1000, 1);
     }
-    let login_fn: libloading::Symbol<FnLoginV30> = sym(lib, b"NET_DVR_Login_V30")?;
-    let c_ip = CString::new(ip).map_err(|_| AdapterError::Connection("IP tidak valid".into()))?;
+    let login_fn: libloading::Symbol<FnLoginV30> = match sym(lib, b"NET_DVR_Login_V30") {
+        Ok(f) => f,
+        Err(e) => {
+            let _ = cleanup(lib);
+            return Err(e);
+        }
+    };
+    let c_ip = match CString::new(ip) {
+        Ok(c) => c,
+        Err(_) => {
+            let _ = cleanup(lib);
+            return Err(AdapterError::Connection("IP tidak valid".into()));
+        }
+    };
     let c_user = CString::new(user).unwrap_or_default();
     let c_pass = CString::new(pass).unwrap_or_default();
     let mut local_info = [0u8; 256];

@@ -1,4 +1,4 @@
-# Keterbatasan yang Diketahui (jujur, per 2026-10-14 — build 6)
+# Keterbatasan yang Diketahui (jujur, per 2026-10-17 — build 9)
 
 1. **Adapter vendor terimplementasi, BELUM teruji hardware.** ZKTeco &
    Solution (COM CZKEM: fetch log/user/provision/info) dan Hikvision
@@ -32,3 +32,19 @@
    (menu Pengaturan). Interval minimal 60 detik.
 10. Wizard installer NSIS terbentuk tetapi instalasi di mesin bersih belum diuji.
 11. i18n: label Indonesia saja (sesuai spesifikasi).
+12. **Adapter COM (zkcom) bisa membocorkan alokasi BSTR pada jalur error** saat
+    SDK gagal berulang-ulang (kebocoran memori kecil hanya di mesin yang
+    mengalami error SDK beruntun; jalur sukses bebas bocor). Menitip dibereskan
+    setelah uji hardware; tanpa perangkat, perbaikan tidak bisa diverifikasi
+    sehingga tidak diklaim tuntas.
+13. **Lembur sebelum shift (`overtime_before_minutes`) tersimpan sebagai
+    kebijakan tetapi belum menambah lembur.** Mesin hanya menghitung lembur
+    setelah jam selesai (dengan approval bila wajib). Kolom disiapkan agar
+    UI/DB tak berubah saat fitur ini diaktifkan.
+14. **Ekspor PDF transliterasi ASCII**: setiap karakter non-ASCII di luar tabel
+    Latin (mis. '·', '•', simbol khusus) diganti '?'. Tes `pdf_indonesian_chars_survive`
+    menuncatkannya; tata letak kaya (logo/grafik/multi-kolom) tetap belum.
+15. **Backup adalah salinan level-file setelah `wal_checkpoint(TRUNCATE)`.**
+    Penulisan di antara checkpoint dan salinan (hampir hanya mungkin dari
+    tugas terjadwal internal) tidak ikut dalam salinan itu dan baru masuk pada
+    backup berikutnya; restore menjalankan `integrity_check`.

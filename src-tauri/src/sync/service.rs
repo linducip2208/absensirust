@@ -96,13 +96,17 @@ pub fn sync_device(
             }
             Err(e) => {
                 last_err = e.to_string();
-                if matches!(e, AppError::Device(_))
+                // Pembatalan user BUKAN kegagalan perangkat: jangan masukkan
+                // backoff, jangan menaikkan consecutive_failures.
+                if last_err.contains("dibatalkan") {
+                    break;
+                }
+                if !(matches!(e, AppError::Device(_))
                     || last_err.contains("SIMULATED")
                     || last_err.contains("koneksi")
-                    || last_err.contains("belum connect")
+                    || last_err.contains("belum connect"))
                 {
-                    // retryable
-                } else if last_err.contains("dibatalkan") {
+                    // Non-retryable lain: berhenti cepat.
                     break;
                 }
                 if (i as u32) < max_retries.saturating_sub(1) {
@@ -112,6 +116,12 @@ pub fn sync_device(
         }
     }
     let now = timex::now_wib_string();
+    // Pembatalan oleh pengguna: keluar bersih, tanpa menandai perangkat
+    // error / menaikkan hitungan kegagalan (mis. status error palsu).
+    if last_err.contains("dibatalkan") {
+        log::info!("sinkron {did} dibatalkan pengguna");
+        return Err(AppError::Conflict("sinkronisasi dibatalkan".into()));
+    }
     repo.exec(
         "INSERT INTO device_sync_state (device_id, checkpoint, consecutive_failures, updated_at)
          VALUES (?1,?2,1,?3)
@@ -169,7 +179,8 @@ fn try_sync_once(
         inserted: rep.inserted,
         duplicates: rep.duplicates,
         unmapped: rep.unmapped,
-        failed: 0,
+        // Jujur: baris waktu korup yang dilewati dihitung gagal (bukan 0).
+        failed: rep.invalid,
         checkpoint: if new_cp.is_empty() {
             checkpoint.to_string()
         } else {

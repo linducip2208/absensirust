@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState } from 'react';
+import React, { createContext, useContext, useMemo, useRef, useState } from 'react';
 
 export interface Toast {
   id: number;
@@ -16,13 +16,19 @@ let seq = 1;
 
 export function ToastProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
-  const push = (kind: Toast['kind'], message: string) => {
+  const pushRef = useRef(push);
+  function push(kind: Toast['kind'], message: string) {
     const id = seq++;
     setToasts((t) => [...t, { id, kind, message }]);
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 5000);
-  };
+  }
+  // Nilai context IDENT (push via ref): dulu provider baru tiap render —
+  // efek yang bergantung `toast` (mis. Crud load) me-render ulang & re-fetch
+  // tiap toast muncul/auto-dismiss.
+  const value = useMemo(() => ({ push: (k: Toast['kind'], m: string) => pushRef.current(k, m) }), []);
+  pushRef.current = push;
   return (
-    <ToastCtx.Provider value={{ push }}>
+    <ToastCtx.Provider value={value}>
       {children}
       <div style={{ position: 'fixed', right: 16, bottom: 16, zIndex: 9999, display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 380 }}>
         {toasts.map((t) => (

@@ -95,6 +95,10 @@ export default function Reports() {
   const setSel = (k: keyof ReportFilter) => (e: React.ChangeEvent<HTMLSelectElement>) =>
     setF((prev) => ({ ...prev, [k]: e.target.value }));
   const optLabel = (r: Row) => String(r.name ?? r.code ?? r.id);
+  // Tiga laporan ini tabel log: hanya rentang tanggal yang berlaku — filter
+  // cabang/departemen/shift/status/karyawan diabaikan backend dan kini
+  // disembunyikan agar tidak menipu pengguna.
+  const isLogKind = kind === 'log_perangkat' || kind === 'error_sync' || kind === 'riwayat_koreksi';
 
   return (
     <Layout title="Laporan" breadcrumb="Analitik">
@@ -110,38 +114,49 @@ export default function Reports() {
             </div>
             <div className="col-md-2"><Field label="Dari"><input type="date" className="form-control" value={f.start} onChange={set('start')} /></Field></div>
             <div className="col-md-2"><Field label="Sampai"><input type="date" className="form-control" value={f.end} onChange={set('end')} /></Field></div>
-            <div className="col-md-2">
-              <Field label="Cabang">
-                <select className="form-select" value={f.branchId} onChange={setSel('branchId')}>
-                  <option value="">Semua cabang</option>
-                  {branches.map((b) => <option key={String(b.id)} value={String(b.id)}>{optLabel(b)}</option>)}
-                </select>
-              </Field>
-            </div>
-            <div className="col-md-2">
-              <Field label="Departemen">
-                <select className="form-select" value={f.departmentId} onChange={setSel('departmentId')}>
-                  <option value="">Semua departemen</option>
-                  {departments.map((b) => <option key={String(b.id)} value={String(b.id)}>{optLabel(b)}</option>)}
-                </select>
-              </Field>
-            </div>
-            <div className="col-md-2">
-              <Field label="Shift">
-                <select className="form-select" value={f.shiftId} onChange={setSel('shiftId')}>
-                  <option value="">Semua shift</option>
-                  {shifts.map((b) => <option key={String(b.id)} value={String(b.id)}>{optLabel(b)}</option>)}
-                </select>
-              </Field>
-            </div>
-            <div className="col-md-2">
-              <Field label="Status">
-                <select className="form-select" value={f.status} onChange={setSel('status')}>
-                  {STATUS_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-                </select>
-              </Field>
-            </div>
-            <div className="col-md-3"><Field label="ID karyawan"><input className="form-control" value={f.employeeId} onChange={set('employeeId')} placeholder="Kosongkan untuk semua" /></Field></div>
+            {!isLogKind && (
+              <>
+                <div className="col-md-2">
+                  <Field label="Cabang">
+                    <select className="form-select" value={f.branchId} onChange={setSel('branchId')}>
+                      <option value="">Semua cabang</option>
+                      {branches.map((b) => <option key={String(b.id)} value={String(b.id)}>{optLabel(b)}</option>)}
+                    </select>
+                  </Field>
+                </div>
+                <div className="col-md-2">
+                  <Field label="Departemen">
+                    <select className="form-select" value={f.departmentId} onChange={setSel('departmentId')}>
+                      <option value="">Semua departemen</option>
+                      {departments.map((b) => <option key={String(b.id)} value={String(b.id)}>{optLabel(b)}</option>)}
+                    </select>
+                  </Field>
+                </div>
+                <div className="col-md-2">
+                  <Field label="Shift">
+                    <select className="form-select" value={f.shiftId} onChange={setSel('shiftId')}>
+                      <option value="">Semua shift</option>
+                      {shifts.map((b) => <option key={String(b.id)} value={String(b.id)}>{optLabel(b)}</option>)}
+                    </select>
+                  </Field>
+                </div>
+                <div className="col-md-2">
+                  <Field label="Status">
+                    <select className="form-select" value={f.status} onChange={setSel('status')}>
+                      {STATUS_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                    </select>
+                  </Field>
+                </div>
+                <div className="col-md-3"><Field label="ID karyawan"><input className="form-control" value={f.employeeId} onChange={set('employeeId')} placeholder="Kosongkan untuk semua" /></Field></div>
+              </>
+            )}
+            {isLogKind && (
+              <div className="col-12">
+                <div className="text-secondary">
+                  Laporan log hanya memakai rentang tanggal — filter cabang/departemen/shift/status karyawan tidak berlaku.
+                </div>
+              </div>
+            )}
           </div>
           <div className="btn-list">
             <button className="btn btn-primary" disabled={busy} onClick={query}>Tampilkan</button>

@@ -1,4 +1,4 @@
-AttendX Rust 1.0.0 — Paket Distribusi Windows x64 (build 6)
+AttendX Rust 1.0.0 — Paket Distribusi Windows x64 (build 9)
 ========================================================
 
 ISI FOLDER INI:

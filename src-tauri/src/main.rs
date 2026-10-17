@@ -21,7 +21,8 @@ fn main() {
     attendx_rust_lib::applog::init(&dir);
     log::info!("AttendX start v{}", env!("CARGO_PKG_VERSION"));
     let db_path = dir.join("attendx.db");
-    let repo = Repo::open(&db_path).expect("buka database");
+    let repo = Repo::open(&db_path)
+        .unwrap_or_else(|e| panic!("gagal membuka database {}: {e}", db_path.display()));
     let sessions = SessionStore::new(8 * 3600);
     if let Ok(Some(v)) = repo.query_one::<String, _>(
         "SELECT value FROM app_settings WHERE key='session_timeout_secs'",
@@ -38,6 +39,7 @@ fn main() {
         db_path,
         sched_enabled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         sched_running: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        sched_task: std::sync::Mutex::new(None),
     };
     tauri::Builder::default()
         .manage(state)
@@ -84,6 +86,7 @@ fn main() {
             attendx_rust_lib::commands::device_fetch_users,
             attendx_rust_lib::commands::device_provision_user,
             attendx_rust_lib::commands::leave_balances,
+            attendx_rust_lib::commands::leave_decide,
             attendx_rust_lib::commands::search_global,
             attendx_rust_lib::commands::schedule_export,
             attendx_rust_lib::commands::schedule_import_preview,

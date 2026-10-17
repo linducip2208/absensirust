@@ -158,15 +158,12 @@ impl DeviceAdapter for ZktecoAdapter {
         let host = last_host();
         let (ip, port, machine) = self.endpoint(&host);
         let mut session = ZkSession::open(&ip, port)?;
-        session.enable_device(machine, false)?;
-        let read = session.read_general_log_data(machine);
-        // Selalu aktifkan kembali perangkat sebelum keluar.
+        // Baca log TIDAK perlu menonaktifkan perangkat (dulu:
+        // EnableDevice(false) lalu EnableDevice(true) setelah loop — bila
+        // re-enable gagal terminal nyaris-mati/terkunci untuk absensi).
+        session.read_general_log_data(machine)?;
         let mut out: Vec<DeviceLog> = Vec::new();
         let mut new_cp = checkpoint.to_string();
-        if let Err(e) = read {
-            session.enable_device(machine, true)?;
-            return Err(e);
-        }
         let skip_before = checkpoint_time(checkpoint);
         let mut scanned = 0usize;
         let mut loop_err: Option<AdapterError> = None;
@@ -209,8 +206,8 @@ impl DeviceAdapter for ZktecoAdapter {
                 }
             }
         }
-        // Perangkat SELALU diaktifkan kembali, apa pun hasil loop di atas.
-        session.enable_device(machine, true)?;
+        // Baris korup di akhir tidak menghambat hasil; perangkat tetap
+        // aktif sepanjang pembacaan (tanpa EnableDevice).
         if let Some(e) = loop_err {
             return Err(e);
         }

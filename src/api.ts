@@ -42,14 +42,33 @@ export async function pickFile(filters: { name: string; extensions: string[] }[]
   return typeof sel === 'string' ? sel : null;
 }
 
-/** Semua pemanggilan backend lewat Tauri IPC. Di luar Tauri, lempar error yang jelas. */
+/** Semua pemanggilan backend lewat Tauri IPC. Di luar Tauri, lempar error yang jelas.
+ *  Sesi kedaluwarsa → bersihkan sesi + kembali ke login (jangan dead-end toast). */
 export async function invoke<T>(cmd: string, args: Record<string, unknown> = {}): Promise<T> {
   if (!isTauri()) {
     throw new Error(
       `Perintah "${cmd}" membutuhkan aplikasi desktop AttendX (runtime Tauri tidak ditemukan). Jalankan aplikasi via Tauri, bukan browser biasa.`,
     );
   }
-  return tauriInvoke<T>(cmd, args);
+  try {
+    return await tauriInvoke<T>(cmd, args);
+  } catch (e) {
+    const msg = String(e ?? '');
+    if (
+      msg.includes('sesi tidak valid') ||
+      msg.includes('sesi kedaluwarsa') ||
+      msg.includes('autentikasi gagal')
+    ) {
+      // Sesi mati (timeout/role berubah/logout): bersihkan token agar Guard
+      // mengarahkan ulang ke login — jangan dead-end toast di halaman lama.
+      const hash = typeof window !== 'undefined' ? window.location.hash : '';
+      if (!hash.startsWith('#/login')) {
+        clearSession();
+        if (typeof window !== 'undefined') window.location.hash = '#/login';
+      }
+    }
+    throw e;
+  }
 }
 
 /** Kunci argumen HARUS snake_case persis seperti signature command Rust
@@ -75,7 +94,7 @@ export const api = {
     invoke<string>('table_delete', { token: getToken(), table, id, hard }),
   deviceTest: (deviceId: string) => invoke<unknown>('device_test', { token: getToken(), device_id: deviceId }),
   deviceSync: (deviceId: string) => invoke<SyncStats>('device_sync', { token: getToken(), device_id: deviceId }),
-  deviceRegistry: () => invoke<RegistryEntry[]>('device_registry'),
+  deviceRegistry: (token: string) => invoke<RegistryEntry[]>('device_registry', { token }),
   deviceSdkStatus: () => invoke<SdkStatus[]>('device_sdk_status', { token: getToken() }),
   attendanceCompute: (workDate: string, employeeId?: string) =>
     invoke<{ computed: number; date: string }>('attendance_compute', {
@@ -143,6 +162,8 @@ export const api = {
   deviceProvisionUser: (deviceId: string, deviceUserId: string, name: string) =>
     invoke<string>('device_provision_user', { token: getToken(), device_id: deviceId, device_user_id: deviceUserId, name }),
   leaveBalances: () => invoke<LeaveBalance[]>('leave_balances', { token: getToken() }),
+  leaveDecide: (requestId: string, approve: boolean) =>
+    invoke<string>('leave_decide', { token: getToken(), request_id: requestId, approve }),
   searchGlobal: (query: string) =>
     invoke<{ employees: SearchRow[]; devices: SearchRow[] }>('search_global', { token: getToken(), query }),
   scheduleExport: (startDate: string, endDate: string) =>
@@ -325,4 +346,21 @@ export function todayWIB(): string {
   // WIB = UTC+7. Hitung dari UTC agar konsisten di semua zona browser.
   const now = new Date(Date.now() + 7 * 3600 * 1000);
   return now.toISOString().slice(0, 10);
+}
+
+/** Peta id→nama karyawan untuk display (loop semua halaman; dulu halaman-1
+ *  per_page>200 terpotong clamp backend dan menampilkan UUID). */
+export async function fetchEmployeeNameMap(): Promise<Record<string, string>> {
+  const map: Record<string, string> = {};
+  let page = 1;
+  let total = Infinity;
+  while (page <= 50) {
+    const res = await api.tableList('employees', page, 200, '', 'name', 'asc');
+    total = res.total;
+    if (res.rows.length === 0) break;
+    for (const e of res.rows) map[String(e.id)] = String(e.name ?? e.nik ?? e.id);
+    if (Object.keys(map).length >= total) break;
+    page += 1;
+  }
+  return map;
 }
