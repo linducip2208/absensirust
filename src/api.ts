@@ -164,6 +164,9 @@ export const api = {
   leaveBalances: () => invoke<LeaveBalance[]>('leave_balances', { token: getToken() }),
   leaveDecide: (requestId: string, approve: boolean) =>
     invoke<string>('leave_decide', { token: getToken(), request_id: requestId, approve }),
+
+  overtimeDecide: (requestId: string, approve: boolean) =>
+    invoke<string>('overtime_decide', { token: getToken(), request_id: requestId, approve }),
   searchGlobal: (query: string) =>
     invoke<{ employees: SearchRow[]; devices: SearchRow[] }>('search_global', { token: getToken(), query }),
   scheduleExport: (startDate: string, endDate: string) =>
@@ -183,6 +186,8 @@ export interface DashboardData {
   hadir: number;
   terlambat: number;
   tidak_hadir: number;
+  /** Karyawan aktif yang belum punya baris hasil (belum dihitung mesin). */
+  belum_dihitung?: number;
   cuti_izin: number;
   devices: { total: number; online: number; offline: number; error: number };
   daily: { date: string; hadir: number; terlambat: number; total: number }[];

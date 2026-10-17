@@ -441,6 +441,9 @@ pub(crate) fn build_event_time(
     {
         return None;
     }
+    // Tanggal harus nyata di kalender (31 Februari seperti dari jam rusak
+    // tidak boleh lolos — string korup akan mengacaukan checkpoint).
+    chrono::NaiveDate::from_ymd_opt(year, month as u32, day as u32)?;
     Some(format!(
         "{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}"
     ))

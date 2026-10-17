@@ -42,12 +42,20 @@ export default function Schedule() {
   const shiftCode = (id: string) => shifts.find((x) => String(x.id) === id)?.code ?? id;
 
   const myReq = useRef(0);
+  const [conflictsErr, setConflictsErr] = useState('');
+  const loadConflicts = (ws: string) => {
+    setConflicts(null);
+    setConflictsErr('');
+    api
+      .scheduleConflicts(ws, addDays(ws, 6))
+      .then((c) => setConflicts(c))
+      .catch((e: unknown) =>
+        setConflictsErr(e instanceof Error ? e.message : String(e)),
+      );
+  };
   const load = async (ws: string) => {
     const id = ++myReq.current;
     setLoading(true);
-    // Kartu kanan (bentrok/tukar) direset dulu: dulu bila scheduleConflicts
-    // gagal, kartu menampilkan loading berputar/hasil minggu lama selamanya.
-    setConflicts(null);
     try {
       const [w, s, e] = await Promise.all([
         api.scheduleWeek(ws),
@@ -63,15 +71,13 @@ export default function Schedule() {
       if (id === myReq.current) { setLoading(false); }
       return;
     }
-    const c = await api.scheduleConflicts(ws, addDays(ws, 6)).catch(() => null);
-    if (id !== myReq.current) return;
-    setConflicts(c);
     const sw = await api
       .tableList('shift_swaps', 1, 50, '', 'created_at', 'desc')
       .catch(() => null);
     if (id !== myReq.current) return;
     setSwaps(sw?.rows ?? []);
     if (id === myReq.current) setLoading(false);
+    loadConflicts(ws);
   };
 
   useEffect(() => {
@@ -87,10 +93,18 @@ export default function Schedule() {
     try {
       const r = await api.scheduleBulk(bulkEmps, bulkShift, bulkStart, bulkEnd, dryRun);
       const skip = Array.isArray(r.skipped) ? r.skipped : [];
-      setBulkReport(
-        `${dryRun ? '[PRATINJAU] ' : ''}${r.created} akan dibuat/dibuat, ${skip.length} dilewati. ` +
-        skip.map((s) => `${s.employee_id}: ${s.reason}`).join(' | '),
-      );
+      if (dryRun) {
+        setBulkReport(
+          `[PRATINJAU] ${r.created} jadwal akan dibuat, ${skip.length} dilewati. ` +
+          skip.map((s) => `${s.employee_id}: ${s.reason}`).join(' | '),
+        );
+      } else {
+        setBulkReport(
+          `${r.created} jadwal dibuat, ${skip.length} dilewati. ` +
+          skip.map((s) => `${s.employee_id}: ${s.reason}`).join(' | '),
+        );
+        toast.push('success', `${r.created} jadwal berhasil dibuat`);
+      }
       if (!dryRun) await load(weekStart);
     } catch (e) {
       toast.push('error', e instanceof Error ? e.message : String(e));
@@ -103,7 +117,10 @@ export default function Schedule() {
     setBusy(true);
     try {
       const r = await api.scheduleCopyWeek(weekStart, copyDst, dryRun);
-      toast.push('success', `${dryRun ? '[Pratinjau] ' : ''}Disalin: ${r.copied}, dilewati: ${typeof r.skipped === 'number' ? r.skipped : 0}`);
+      toast.push(
+        dryRun ? 'info' : 'success',
+        `${dryRun ? '[Pratinjau] Akan disalin: ' : 'Disalin: '}${r.copied}, dilewati: ${typeof r.skipped === 'number' ? r.skipped : 0}`,
+      );
       if (!dryRun) await load(weekStart);
     } catch (e) {
       toast.push('error', e instanceof Error ? e.message : String(e));
@@ -287,7 +304,14 @@ export default function Schedule() {
           <div className="card mb-3">
             <div className="card-header"><h3 className="card-title">Deteksi bentrok & jadwal kosong</h3></div>
             <div className="card-body">
-              {!conflicts ? <LoadingState /> : (
+              {conflictsErr ? (
+                <div>
+                  <div className="text-danger mb-2">Gagal memuat deteksi: {conflictsErr}</div>
+                  <button className="btn btn-outline-primary btn-sm" onClick={() => loadConflicts(weekStart)}>
+                    Coba lagi
+                  </button>
+                </div>
+              ) : !conflicts ? <LoadingState /> : (
                 <>
                   <h4>Bentrok ({conflicts.overlaps.length})</h4>
                   {conflicts.overlaps.length === 0 ? <div className="text-secondary mb-2">Tidak ada shift tumpang tindih.</div> : (
@@ -303,7 +327,7 @@ export default function Schedule() {
                   {conflicts.empty.length === 0 ? <div className="text-secondary">Semua karyawan terjadwal.</div> : (
                     <ul className="list-group">
                       {conflicts.empty.slice(0, 30).map((x, i) => (
-                        <li className="list-group-item" key={i}>{x.date} — {x.name}</li>
+                        <li className="list-group-item" key={`${x.date}-${i}`}>{x.date} — {x.name}</li>
                       ))}
                     </ul>
                   )}

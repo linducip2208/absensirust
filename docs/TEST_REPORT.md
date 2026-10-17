@@ -1,4 +1,141 @@
-# Laporan Pengujian (hasil aktual — build 9: 2026-10-17, Windows 11 x64)
+# Laporan Pengujian (hasil aktual — build 10: 2026-10-17, Windows 11 x64)
+
+## 0. Build 10 — audit menyeluruh kedua (arah punch, pelindung data, perbaikan laporan & UI)
+
+| Perintah | Hasil |
+|---|---|
+| `npx tsc --noEmit` / eslint / `vitest run` | **LULUS** — 12/12 |
+| `cargo fmt` / `clippy -D warnings` | **LULUS** (0 error, 0 warning) |
+| `cargo test` | **LULUS — 88/88 lib**, 4 `#[ignore]` hardware |
+| `npm run build` + `npx tauri build` (NSIS) | **LULUS** — exe 14,49 MB + setup 3,51 MB |
+| Smoke test DB | **LULUS** — **migrasi v10 teraplikasi**, integrity ok |
+
+### Bug nyata diperbaiki (build 10) — hasil audit 3 utas + verifikasi manual
+
+**Backend:**
+
+1. **Izin baca tetap ditutup untuk halaman baca** (regresi build 9): Users
+   Audit & halaman Absensi tampak "kosong" memaksa error karena
+   `check_table_perm` menutup READ semua tabel terlarang. Kini WRITE tabel
+   sistem (`attendance_results`/`raw_events`/`audit_log`/`app_settings`)
+   tetap terlarang, tapi **read dikembalikan**: `attendance_results`
+   (`attendance.view`), `audit_log` (`user.view`), `raw_events` tetap
+   tertutup, `app_settings` → pesan Validation "via menu Pengaturan".
+2. **Pengelompokan event mengabaikan `raw_events.direction`**: punch `out`
+   shift malam (06:58) bisa menjadi clock-in palsu shift pagi berikutnya.
+   `group_events_for_shift` kini bawa arah (`in`/`out`/''=in): clock-in
+   hanya `'in'`, clock-out hanya `'out'` terakhir ≥5 menit; jendela tanpa
+   punch `'in'` sama sekali → kosong (tidak direkayasa). Perangkat
+   modeless (semua `'in'`) memakai heuristik lama. (+4 test: modeless,
+   lintas-shift pagi tak palsu, hanya-`out`, klaster duplikat.)
+3. **Pemetaan karyawan↔mesin per `device_user_id` saja** padahal UNIQUE
+   `(device_id, device_user_id)` — dua perangkat dengan user-id sama
+   tercampur. `attendance_compute` kini memetakan per pasangan
+   `(device_id, device_user_id)` (query per perangkat).
+4. **Koreksi manual lenyap saat hitung ulang** → kolom `manually_corrected`
+   (migrasi **v10** `010_attendance_guard.sql`); `attendance_correct`
+   menandai `manually_corrected=1` + trim nilai; `attendance_compute`
+   melewatinya (`skipped_manual` di JSON hasil).
+5. **Backup otomatis scheduler tanpa `checkpoint_wal()` + tanpa validasi**
+   → WAL tidak ikut tersalin. Kini checkpoint dulu, salin, **validasi
+   integrity** (`backup_db` memakai `validate_backup`), gagal = file
+   dibuang (tidak menunggu rotasi membuang backup lama).
+6. **Nama backup detik-an bisa saling menimpa** → suffix `-1`, `-2`, …;
+   **rotasi menyapu salinan pre-restore** → kini hanya
+   `attendx-backup-*.db` yang dirotasi. (+2 test: nama unik 1 detik,
+   rotasi selamat menyisakan pre-restore & file asing.)
+7. **`build_adapter` diam-diam mensimulasikan nama tak dikenal** (mis.
+   salah kapital `ZkTeco`) → kini "`Validation: adapter tidak dikenal`";
+   SIMULATED hanya untuk `mock*`/kosong yang disengaja. 5 pemanggil
+   disesuaikan ke `AppResult<Box<dyn DeviceAdapter>>`.
+8. **`SyncStats.attempts` selalu 1** meski loop retry menghitung `attempts`
+   → kini benar (`SyncStats { attempts, ..s }`).
+9. **`applog` file harian tak berbatas** (loop error = banjir) → batas
+   10 MB/file/hari, penanda sekali sehari saat berhenti menulis.
+10. **`to_csv` tanpa pelindung formula** (`=CMD` dieksekusi Excel saat
+    laporan berisi teks berbahaya) → sel diawali `'` bila diawali
+    `=`/`+`/`@` (dan `-` non-angka); angka negatif sah tidak tersentuh
+    (+test dilindungi, angka utuh).
+11. **Form pengaturan tanpa validasi angka**: `rounding_minutes` berisi
+    "lima"/"" bisa membuat komputasi baca `i64` gagal → validasi backend
+    `validate_value_rules` (angka ≥0, rounding ≥1, flag 0/1; kuota izin
+    ≥0) dipanggil di create+update, ditiru di klien Settings (revert
+    nilai gagal + tombol per-kolom "Menyimpan…").
+12. **`shifts.applicable_days` bisa kosong/tak valid** → dinormalisasi
+    saat create (kosong → `0,1,2,3,4`), ketat 0..=6 unik saat create+
+    update (+test `normalize_applicable_days_aturan_konvensi`); data
+    lama `'1,2,3,4,5'` ikut dibereskan migrasi v10.
+13. **Pengajuan izin/lembur bisa diubah statusnya lewat edit generik**
+    (bypass keputusan) → kolom `status`/`approved_by`/`decided_at`
+    dikunci: hanya lewat `leave_decide`/`overtime_decide` (perintah baru —
+    dulu lembur tidak punya jalur keputusan apa pun):
+    +test `overtime_decide_pending_sekali_saja`, guard di create/update,
+    frontend registry + kartu Keputusan lembur.
+14. **Kalender kerja tak bisa membatalkan libur mingguan** → helper
+    `resolve_day_off`: `kind='kerja'` = hari kerja khusus (menang atas
+    pola mingguan), `kind='libur'` = libur walau shift berlaku
+    (+test `kalender_khusus_menang_diatas_pola_mingguan`).
+15. **Dashboard `tidak_hadir` menghitung belum dihitung** → kartu baru
+    `belum_dihitung = aktif − baris_hasil` (jujur saat mesin belum
+    jalan); `tidak_hadir` = baris_hasil − hadir − cuti − libur −
+    belum_lengkap (tak pernah negatif).
+16. **Rate-limit >10rb reset menyapu lockout aktif** → berjenjang:
+    buang kedaluwarsa → sementara simpan yang ≥3 gagalan → terakhir
+    baru `clear()`.
+17. **`zkcom::build_event_time` menerima 31 Februari** (jam rusak
+    dikirim berulang, checkpoint tersangkut selamanya) → tanggal
+    divalidasi kalender (`NaiveDate::from_ymd_opt`).
+18. **`zkteco::checkpoint_time` bisa panic** saat memotong checkpoint
+    non-ASCII (DB rusak) → `is_ascii()` dijaga dulu (None = dari awal).
+19. **`table_list` pencarian salah kolom & wildcard liar**: kini kolom
+    teks utama per tabel (leave/overtime→`reason`, holiday→`name`,
+    mapping→`device_user_id`, dsb.) + wildcard `% _ \` di-escape
+    (`LIKE ?1 ESCAPE '\`) di create pencarian.
+20. **`search_global` tanpa batas panjang** → maks 100 karakter.
+
+**Frontend:**
+
+21. **Modal koreksi absensi memakai `busy`**: spinner tidak muncul saat
+    koreksi berjalan (sudah این pegangan `saving` baru) — kini benar dan
+    tombol per-peran: Hitung (hr_admin/super_admin/operator_device),
+    Antrean ulang (operator_device/super_admin), Koreksi (hr/super).
+22. **Crud `readOnly` hanya dinonaktifkan saat edit** — status pengajuan
+    masih terkirim "approved" saat tambah → kini readOnly selalu
+    dinonaktifkan & tidak dikirim pada payload (status pengajuan tidak
+    bisa dipalsukan lewat form).
+23. Leaves: `status` kini readOnly (badge, form terkunci), keputusan
+    hanya via kartu; kartu Keputusan digeneralisasi + **kartu Keputusan
+    lembur** (dulu tidak ada jalur); saldo cuti diberi label jujur
+    "sepanjang sejarah" (tanpa aturan periode — lihat KNOWN_LIMITATIONS).
+24. Settings: validasi angka klien + pesan batal tersimpan (revert) +
+    tombol per-field "Menyimpan…"; kebijakan divalidasi sebelum kirim.
+25. Jadwal: kartu bentrok punya **status gagal + coba lagi** (dulu
+    "Memuat" abadi bila scheduleConflicts gagal); toast jujur untuk
+    pratinjau vs penulisan (`[Pratinjau]` vs sukses).
+26. Pencarian global `state.q` kini ikut saat navigasi ke rute yang sama
+    (dulu `initialSearch` hanya terbaca sekali; kini `key` Crud diperbarui
+    + kembali ke tab Data); login kembali ke `loc.state.from` (dulu selalu
+    `/`).
+27. Dasbor: kartu "Belum dihitung" + kunci baris komposit (tanggal-nama)
+    menghindari duplikat-kunci React.
+28. Ekspor karyawan CSV kini diberi **BOM UTF-8** (Excel tak salah
+    encoding nama non-ASCII).
+29. Kontrak IPC diperluas: `overtime_decide`, `has_admin`, `login`,
+    `logout`, `settings_get/set`, `scheduler_get/set`, `sync_run_all`,
+    `backup_create/restore`, `health_check`, `search_global`,
+    `diagnostics_bundle`, `attendance_review`, impor jadwal+karyawan
+    (test frontend 10→12).
+
+### Yang disengaja tidak diubah (build 10)
+
+- `setup_admin` TOCTOU, bocor BSTR zkcom jalur error, pemetaan pesan
+  UNIQUE per-kolom, matriks peran→tabel tulis penuh (lihat build 9).
+- Zkteco: mundur jam perangkat tak bisa dibedakan dari baris lama oleh
+  checkpoint (lihat KNOWN_LIMITATIONS no. 16) — baris lama aman, hanya
+  deteksi mundurnya yang terbatas.
+- Dedup ganda-punch < 1 detik pada pasangan sama (perangkat kirim dua
+  event milidetik yang sama) — masih masuk raw_events dan dihitung
+  duplikat oleh heuristik klaster (lihat KNOWN_LIMITATIONS no. 17).
 
 ## 0. Build 9 — audit menyeluruh (konvensi hari, laporan log diperbaiki, guard tulis tabel)
 

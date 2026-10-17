@@ -84,11 +84,10 @@ docs/                12 dokumen (lihat daftar di bawah)
 
 ## Status penerimaan
 
-Semua kriteria yang dapat diverifikasi pada lingkungan ini **lulus** (build 9:
-77 test Rust + 10 test frontend, fmt/clippy/eslint/tsc bersih, installer NSIS
-terbentuk, smoke test exe + migrasi v9 `applicable_days`
-`0=Sen..6=Min` + integritas DB ok, paket `distribusi/`
-disegarkan ke build 9).
+Semua kriteria yang dapat diverifikasi pada lingkungan ini **lulus** (build 10:
+88 test Rust + 12 test frontend, fmt/clippy/eslint/tsc bersih, installer NSIS
+terbentuk, smoke test exe + migrasi v10 `manually_corrected` + integritas DB
+ok, paket `distribusi/` disegarkan ke build 10).
 Lihat `docs/TEST_REPORT.md` dan `docs/KNOWN_LIMITATIONS.md` untuk status BLOCKED
 (pengujian hardware SDK nyata — membutuhkan DLL terdaftar + perangkat fisik;
 cek kesiapan DLL dari UI via Devices → DLL vendor di mesin ini).

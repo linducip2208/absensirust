@@ -33,6 +33,10 @@ export default function Employees() {
   const role = getUser()?.role ?? '';
   const canWrite = ['super_admin', 'hr_admin'].includes(role);
   const [tab, setTab] = useState<'data' | 'map' | 'import'>('data');
+  // Kata kunci dari pencarian global: selalu kembali ke tab data karyawan.
+  useEffect(() => {
+    if (fromSearch) setTab('data');
+  }, [fromSearch]);
   const [csv, setCsv] = useState('');
   const [preview, setPreview] = useState<{ headers: string[]; rows: { line: number; data: Record<string, string>; errors: string[] }[]; errors: string[] } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -87,7 +91,8 @@ export default function Employees() {
       const lines = [head.join(',')].concat(
         rows.map((r) => head.map((h) => `"${String(r[h] ?? '').replace(/"/g, '""')}"`).join(',')),
       );
-      downloadFile('karyawan.csv', lines.join('\n'), 'text/csv');
+      // BOM UTF-8 agar Excel tak salah membaca karakter non-ASCII.
+      downloadFile('karyawan.csv', '\uFEFF' + lines.join('\n'), 'text/csv');
       toast.push('success', `Diekspor ${rows.length} karyawan ke CSV`);
     } catch (e) {
       toast.push('error', e instanceof Error ? e.message : String(e));
@@ -105,7 +110,7 @@ export default function Employees() {
           {exportBusy ? 'Mengekspor…' : 'Ekspor CSV'}
         </button>
       </div>
-      {tab === 'data' && <Crud table="employees" title="Karyawan" columns={COLUMNS} orderBy="name" canWrite={canWrite} allowHardDelete initialSearch={fromSearch} />}
+      {tab === 'data' && <Crud key={`e-${fromSearch}`} table="employees" title="Karyawan" columns={COLUMNS} orderBy="name" canWrite={canWrite} allowHardDelete initialSearch={fromSearch} />}
       {tab === 'data' && canWrite && <PhotoCard />}
       {tab === 'map' && (
         <Crud table="employee_device_map" title="Mapping Karyawan–Device" columns={MAP_COLUMNS} canWrite={canWrite} />

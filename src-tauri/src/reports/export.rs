@@ -5,12 +5,29 @@
 
 use crate::errors::{AppError, AppResult};
 
+/// Lindungi pembuka Excel dari serangan formula CSV (satuan kerja: kolom
+/// nama/alamat bisa berbunyi "=COMMAND|..."). Awalan berbahaya diberi
+/// apostrof; angka negatif (mis. -12) TIDAK disentuh.
+fn csv_safe_cell(v: &str) -> String {
+    if v.is_empty() {
+        return String::new();
+    }
+    let first = v.as_bytes()[0];
+    let dangerous = matches!(first, b'=' | b'+' | b'@')
+        || (first == b'-' && v.len() > 1 && !v.as_bytes()[1].is_ascii_digit());
+    if dangerous {
+        format!("'{v}")
+    } else {
+        v.to_string()
+    }
+}
+
 pub fn to_csv(headers: &[String], rows: &[Vec<String>]) -> AppResult<String> {
     let mut w = csv::Writer::from_writer(vec![]);
-    w.write_record(headers)
+    w.write_record(headers.iter().map(|h| csv_safe_cell(h)))
         .map_err(|e| AppError::Validation(e.to_string()))?;
     for r in rows {
-        w.write_record(r)
+        w.write_record(r.iter().map(|c| csv_safe_cell(c)))
             .map_err(|e| AppError::Validation(e.to_string()))?;
     }
     let data = w
@@ -376,6 +393,34 @@ mod tests {
         )
         .unwrap();
         assert!(s.contains("Budi"));
+    }
+    #[test]
+    fn csv_formula_dilindungi_angka_negatif_utuh() {
+        // Formula berbahaya diberi awalan apostrof — Excel tidak mengeksekusinya.
+        let s = to_csv(
+            &["nama".into(), "ket".into()],
+            &[
+                vec!["=1+1 | cmd".into(), "x".into()],
+                vec!["+SUM(A1)".into(), "x".into()],
+                vec!["@meta".into(), "x".into()],
+                // Angka negatif sah JANGAN dirusak.
+                vec!["-12".into(), "x".into()],
+                vec!["-12 hati".into(), "x".into()],
+            ],
+        )
+        .unwrap();
+        assert!(s.contains("'=1+1"), "awal formula: {s}");
+        assert!(s.contains("'+SUM"), "+ formula: {s}");
+        assert!(s.contains("'@meta"), "@ formula: {s}");
+        assert!(
+            s.lines()
+                .any(|l| l.contains(",-12,") || l.starts_with("-12,")),
+            "angka: {s}"
+        );
+        assert!(
+            !s.contains("'-12"),
+            "angka negatif tak boleh berawalan ' : {s}"
+        );
     }
     #[test]
     fn xlsx_export_ok() {

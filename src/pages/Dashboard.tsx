@@ -67,6 +67,7 @@ export default function Dashboard() {
             <StatCard label="Hadir hari ini" value={data.hadir} color="success" />
             <StatCard label="Terlambat" value={data.terlambat} color="warning" />
             <StatCard label="Tidak hadir" value={data.tidak_hadir} color="danger" />
+            <StatCard label="Belum dihitung" value={data.belum_dihitung ?? 0} color="secondary" />
             <StatCard label="Cuti / izin" value={data.cuti_izin} color="info" />
             <StatCard label="Perangkat online" value={data.devices.online} color="success" />
           </div>
@@ -136,7 +137,7 @@ export default function Dashboard() {
                         <tr><td colSpan={5}><EmptyState title="Belum ada aktivitas" hint="Hitung absensi atau sinkronkan perangkat." /></td></tr>
                       )}
                       {data.recent.map((r, i) => (
-                        <tr key={i}>
+                        <tr key={`${r.date}-${r.name}-${i}`}>
                           <td>{r.date}</td><td>{r.name}</td><td>{r.in || '-'}</td><td>{r.out || '-'}</td>
                           <td><StatusBadge value={r.status} /></td>
                         </tr>

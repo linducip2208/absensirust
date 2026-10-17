@@ -6,6 +6,9 @@ import { ConfirmDialog, EmptyState, Field, LoadingState, StatusBadge, useToast }
 /** Pembacaan karyawan untuk pemetaan nama — hanya untuk role yang
  *  benar-benar punya employee.view (operator/viewer tanpa error). */
 const canSeeEmployees = () => ['super_admin', 'hr_admin', 'supervisor'].includes(getUser()?.role ?? '');
+const canCompute = () => ['super_admin', 'hr_admin', 'operator_device'].includes(getUser()?.role ?? '');
+const canRequeue = () => ['super_admin', 'operator_device'].includes(getUser()?.role ?? '');
+const canCorrect = () => ['super_admin', 'hr_admin'].includes(getUser()?.role ?? '');
 
 export default function Attendance() {
   const toast = useToast();
@@ -104,17 +107,21 @@ export default function Attendance() {
             <label className="form-label">Tanggal kerja (WIB)</label>
             <input type="date" className="form-control" value={date} onChange={(e) => setDate(e.target.value)} />
           </div>
-          <button className="btn btn-primary" disabled={busy} onClick={compute}>
-            {busy ? 'Menghitung…' : 'Hitung ulang absensi tanggal ini'}
-          </button>
-          <button
-            className="btn btn-outline-secondary"
-            disabled={busy}
-            title="Kembalikan event yang sudah diproses ke antrean (untuk dihitung ulang)"
-            onClick={() => setConfirmRequeue(true)}
-          >
-            Kembalikan ke antrean
-          </button>
+          {canCompute() && (
+            <button className="btn btn-primary" disabled={busy} onClick={compute}>
+              {busy ? 'Menghitung…' : 'Hitung ulang absensi tanggal ini'}
+            </button>
+          )}
+          {canRequeue() && (
+            <button
+              className="btn btn-outline-secondary"
+              disabled={busy}
+              title="Kembalikan event yang sudah diproses ke antrean (untuk dihitung ulang)"
+              onClick={() => setConfirmRequeue(true)}
+            >
+              Kembalikan ke antrean
+            </button>
+          )}
           {confirmRequeue && (
             <ConfirmDialog
               title="Kembalikan ke antrean?"
@@ -149,7 +156,9 @@ export default function Attendance() {
                   <td>{String(r.work_minutes)} m</td><td>{String(r.late_minutes)} m</td>
                   <td><StatusBadge value={r.status} /></td>
                   <td>{String(r.anomaly || '-')}</td>
-                  <td><button className="btn btn-sm btn-outline-warning" onClick={() => { setCorrecting(r); setNewValue(''); setReason(''); }}>Koreksi</button></td>
+                  <td>{canCorrect() && (
+                    <button className="btn btn-sm btn-outline-warning" onClick={() => { setCorrecting(r); setNewValue(''); setReason(''); }}>Koreksi</button>
+                  )}</td>
                 </tr>
               ))}
             </tbody>
@@ -216,7 +225,7 @@ export default function Attendance() {
                 <Field label="Alasan (wajib)">
                   <textarea className="form-control" value={reason} onChange={(e) => setReason(e.target.value)} />
                 </Field>
-                {busy && <LoadingState />}
+                {saving && <LoadingState />}
               </div>
               <div className="modal-footer">
                 <button className="btn btn-link link-secondary" onClick={() => setCorrecting(null)}>Batal</button>

@@ -1,35 +1,42 @@
 AttendX Rust
-Versi aplikasi : 1.0.0 (build 9, 2026-10-17)
-Versi database : 9 (migrasi v1-v9, kompatibel mundur — data lama tidak hilang)
+Versi aplikasi : 1.0.0 (build 10, 2026-10-17)
+Versi database : 10 (migrasi v1-v10, kompatibel mundur — data lama tidak hilang)
 Target         : Windows 10/11 x64
 Zona waktu     : Asia/Jakarta (WIB)
 Mode           : Offline (tanpa internet, tanpa CDN)
 
 Biner:
-- AttendX-Rust.exe (portable, 14,35 MB)
-- Installer\AttendX Rust_1.0.0_x64-setup.exe (NSIS, 3,49 MB)
+- AttendX-Rust.exe (portable, 14,49 MB)
+- Installer\AttendX Rust_1.0.0_x64-setup.exe (NSIS, 3,51 MB)
 
-Verifikasi build 9:
-- tsc + eslint + vitest 10/10 + npm build: LULUS
-- cargo fmt + clippy + cargo test 77/77 (+4 hardware di-ignore): LULUS
-- Smoke test: integrity_check ok, 26 tabel, migrasi v9 teraplikasi
-  (konvensi applicable_days 0=Sen..6=Min), tanpa kredensial default
-- PDF laporan multi-halaman tervalidasi
+Verifikasi build 10:
+- tsc + eslint + vitest 12/12 + npm build: LULUS
+- cargo fmt + clippy + cargo test 88/88 (+4 hardware di-ignore): LULUS
+- Smoke test: integrity_check ok, migrasi v10 teraplikasi
+  (kolom attendance_results.manually_corrected), tanpa kredensial default
 
-Yang berubah dari build 8 (sapu bersih hasil audit menyeluruh):
-- Laporan log (log perangkat / error sinkron / riwayat koreksi) kini berfungsi;
-  filter tak relevan disembunyikan otomatis
-- Konvensi hari kerja shift diperbaiki via migrasi v9 (Senin tak lagi dihitung
-  sebagai hari libur untuk seed bawaan)
-- Hak tulis diperketat: raw_events/attendance_results/audit_log/app_settings
-  tidak lagi bisa berubah lewat UI CRUD generik (viewer/supervisor/operator)
-- Keputusan izin/cuti: tombol Setujui/Tolak khusus (supervisor bisa memutuskan)
-- Pengguna baru wajib password; ubah role/password/nonaktif berlaku segera
-  (sesi lama dibatalkan)
-- Ingest event korup tak lagi menggulung balik seluruh batch (dilewati + dilapor)
-- Sinkronisasi manual vs terjadwal tidak bisa tabrakan (kunci)
-- Mesin absensi: scan ganda tidak lagi jadi clock-out 0 menit; status "Absent"
-  tidak ditulis sebelum jendela shift berakhir
+Yang berubah dari build 9 (hasil audit menyeluruh kedua):
+- Halaman Audit & Absensi kembali terbaca (regresi build 9 diperbaiki);
+  tulis tabel sistem tetap terlarang lewat UI
+- Mesin absensi memakai arah punch (in/out): punch keluar shift malam
+  tidak lagi menjadi clock-in palsu shift pagi; perangkat satu-arah
+  tetap berperilaku lama
+- Koreksi manual tidak lenyap saat hitung ulang (kolom
+  manually_corrected, migrasi v10)
+- Keputusan lembur: tombol Setujui/Tolak khusus (baru); status pengajuan
+  tak bisa diubah sembarangan lewat form
+- Backup otomatis: WAL ikut tersalin (checkpoint), file divalidasi
+  sebelum rotasi, nama unik dalam satu detik, rotasi tidak menyapu
+  salinan pre-restore
+- Adapter tak dikenal ditolak dengan jelas (bukan diam-diam
+  disimulasikan); statistik percobaan sinkron jujur
+- Kebijakan absensi & kuota cuti divalidasi angka (klien + backend)
+- Shift: hari berlaku selalu valid (0=Sen..6=Min) saat simpan
+- Kalender: hari "kerja" khusus dapat menimpa libur mingguan
+- Dashboard kartu "Belum dihitung" (bukan dihitung mangkir)
+- Ekspor CSV dilindungi dari serangan formula; ekspor karyawan BOM UTF-8
+- Log aplikasi harian dibatasi 10 MB
+- Pencarian tabel: kolom teks yang tepat + wildcard di-escape
 
 SDK hardware: adapter ZKTeco/Solution/Hikvision terimplementasi (butuh DLL +
 uji perangkat fisik, lihat vendor-sdk\CARA-PASANG-DLL.txt). TIME TECH AC6

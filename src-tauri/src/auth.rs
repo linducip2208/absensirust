@@ -273,7 +273,16 @@ fn is_locked_out(username: &str) -> bool {
 fn mark_fail(username: &str) {
     let mut m = fails_map().lock().unwrap();
     if m.len() > 10_000 {
-        m.clear(); // anti meluap memori dari ujung-ujung username acak
+        // Anti-meluap bertingkat: buang dulu entri kedaluwarsa, lalu hanya
+        // simpan yang mendekati kunci (>=3 kegagalan). Pembersihan total
+        // hanya sebagai langkah terakhir — kunci aktif sebisanya simpan.
+        m.retain(|_, (_, t)| t.elapsed().as_secs() < 300);
+        if m.len() > 10_000 {
+            m.retain(|_, (n, _)| *n >= 3);
+        }
+        if m.len() > 10_000 {
+            m.clear();
+        }
     }
     let e = m
         .entry(key_of(username))

@@ -87,6 +87,7 @@ fn main() {
             attendx_rust_lib::commands::device_provision_user,
             attendx_rust_lib::commands::leave_balances,
             attendx_rust_lib::commands::leave_decide,
+            attendx_rust_lib::commands::overtime_decide,
             attendx_rust_lib::commands::search_global,
             attendx_rust_lib::commands::schedule_export,
             attendx_rust_lib::commands::schedule_import_preview,

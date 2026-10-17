@@ -109,7 +109,9 @@ export default function Crud({
     try {
       const payload: Record<string, unknown> = {};
       for (const c of columns) {
-        if (c.readOnly && !isNew) continue;
+        // readOnly = kolom diatur sistem (status pengajuan, serial perangkat,
+        // versi shift): tidak dikirim pada create maupun update.
+        if (c.readOnly) continue;
         if (c.type === 'hidden') continue;
         const v = form[c.key] ?? '';
         // Input tanggal/datetime yang dikosongkan = NULL eksplisit (mis. tgl akhir).
@@ -257,7 +259,7 @@ export default function Crud({
                           <select
                             className={`form-select${errors[c.key] ? ' is-invalid' : ''}`}
                             value={form[c.key] ?? ''}
-                            disabled={c.readOnly && !isNew}
+                            disabled={c.readOnly}
                             onChange={(e) => setForm((f) => ({ ...f, [c.key]: e.target.value }))}
                           >
                             <option value="">— Pilih —</option>
@@ -269,7 +271,7 @@ export default function Crud({
                           <textarea
                             className={`form-control${errors[c.key] ? ' is-invalid' : ''}`}
                             value={form[c.key] ?? ''}
-                            disabled={c.readOnly && !isNew}
+                            disabled={c.readOnly}
                             onChange={(e) => setForm((f) => ({ ...f, [c.key]: e.target.value }))}
                           />
                         ) : (
@@ -278,7 +280,7 @@ export default function Crud({
                             type={c.type === 'number' ? 'number' : c.type === 'date' ? 'date' : c.type === 'datetime' ? 'datetime-local' : c.type === 'password' ? 'password' : 'text'}
                             autoComplete={c.type === 'password' ? 'new-password' : undefined}
                             value={form[c.key] ?? ''}
-                            disabled={c.readOnly && !isNew}
+                            disabled={c.readOnly}
                             onChange={(e) => setForm((f) => ({ ...f, [c.key]: e.target.value }))}
                           />
                         )}

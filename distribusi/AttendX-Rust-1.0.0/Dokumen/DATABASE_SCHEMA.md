@@ -2,7 +2,8 @@
 
 SQLite (`%APPDATA%\AttendX\attendx.db`, WAL, `foreign_keys=ON`).
 Migrasi versioned di `src-tauri/src/db/migrations/00N_*.sql`, tercatat di
-`schema_migrations(version, name, applied_at)`. Versi saat ini: **7**.
+`schema_migrations(version, name, applied_at)`. Versi saat ini: **10**
+(008–010 berupa ALTER/add kolom; detail di tabel terkait).
 
 ## 001_init — inti kepegawaian
 
@@ -50,7 +51,9 @@ Migrasi versioned di `src-tauri/src/db/migrations/00N_*.sql`, tercatat di
 - `attendance_results(id, employee_id, work_date, shift_id, shift_version,
   clock_in, clock_out, work_minutes, break_minutes, late_minutes,
   early_leave_minutes, overtime_minutes, overtime_approved, status, anomaly,
-  source, computed_at, UNIQUE(employee_id, work_date))` + index `(work_date)`
+  source, computed_at, manually_corrected, UNIQUE(employee_id, work_date))`
+  + index `(work_date)`; `manually_corrected` ditambahkan migrasi **v10**
+  (default 0; baris dikoreksi admin tidak dihitung ulang mesin)
 - `corrections_audit(id, attendance_id, changed_by, field_name, old_value,
   new_value, reason, created_at)`
 
@@ -85,3 +88,22 @@ Cabang HQ, departemen Umum, posisi Staff, 3 shift preset (Pagi/Siang/Malam),
 - ID: UUID v4 string. Waktu: TEXT WIB `YYYY-MM-DD HH:MM:SS`.
 - Tulis penting memakai transaksi; semua nilai via parameter binding.
 - `raw_events` dan `corrections_audit` bersifat append-only dari UI.
+
+## 008_backup_auto
+
+- Seed `app_settings`: `backup_auto=0` (backup otomatis harian saat
+  scheduler aktif; diaktifkan lewat menu Pengaturan).
+
+## 009_fix_applicable_days
+
+- Sapu data: `shifts.applicable_days '1,2,3,4,5'` → `'0,1,2,3,4'` —
+  menyelaraskan baris bersejarah dengan konvensi 0=Senin..6=Minggu
+  yang dipakai kode & label UI (seed 006 ikut diperbaiki).
+
+## 010_attendance_guard
+
+- `ALTER attendance_results ADD manually_corrected INTEGER NOT NULL
+  DEFAULT 0` — penanda koreksi manual; mesin hitung-ulang melewatinya
+  (`skipped_manual`).
+- Sapu tipis konvensi lama: `applicable_days='1,2,3,4,5'` →
+  `'0,1,2,3,4'` (baris yang terbentuk di sela migrasi v9).

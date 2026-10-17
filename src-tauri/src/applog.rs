@@ -7,6 +7,12 @@ use std::sync::OnceLock;
 
 static LOG_DIR: OnceLock<PathBuf> = OnceLock::new();
 
+/// Batas ukuran satu file log harian (10 MB) — anti membesar tanpa henti.
+const MAX_LOG_BYTES: u64 = 10 * 1024 * 1024;
+
+/// Sekali per hari per penanda: tulis catatan "log terhenti" lalu diam.
+static STOPPED_MARKED: OnceLock<std::sync::Mutex<String>> = OnceLock::new();
+
 struct FileLogger;
 
 impl log::Log for FileLogger {
@@ -20,6 +26,28 @@ impl log::Log for FileLogger {
         if let Some(dir) = LOG_DIR.get() {
             let day = crate::timex::today_wib().format("%Y-%m-%d").to_string();
             let path = dir.join(format!("app-{day}.log"));
+            // Batas ukuran: file harian >10 MB tidak ditambah lagi (rotasi
+            // harian memang mengganti file, tapi loop error bisa banjir).
+            let cap = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            if cap > MAX_LOG_BYTES {
+                let marker = STOPPED_MARKED.get_or_init(|| std::sync::Mutex::new(String::new()));
+                let mut last = marker.lock().unwrap_or_else(|e| e.into_inner());
+                if *last != day {
+                    *last = day.clone();
+                    if let Ok(mut f) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&path)
+                    {
+                        let _ = writeln!(
+                            f,
+                            "[{}][INFO] log dihentikan: batas 10 MB per file harian tercapai",
+                            crate::timex::now_wib_string()
+                        );
+                    }
+                }
+                return;
+            }
             if let Ok(mut f) = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)

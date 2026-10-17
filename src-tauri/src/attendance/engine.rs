@@ -150,6 +150,18 @@ pub fn valid_hm(s: &str) -> bool {
     }
 }
 
+/// Putuskan hari libur: kalender kerja khusus MENANG atas pola mingguan.
+/// - kalender "kerja"  → hari kerja khusus (meski pola mingguan libur)
+/// - kalender "libur"  → hari libur (meski shift berlaku di hari itu)
+/// - tanpa kalender    → ikuti pola mingguan shift
+pub fn resolve_day_off(cal_kind: Option<&str>, shift_applies: bool) -> bool {
+    match cal_kind {
+        Some("kerja") => false,
+        Some("libur") => true,
+        _ => !shift_applies,
+    }
+}
+
 fn parse_hm(s: &str) -> (u32, u32) {
     let mut it = s.split(':');
     let h = it.next().unwrap_or("0").parse().unwrap_or(0);
@@ -448,17 +460,19 @@ fn out(
 
 /// Kelompokkan raw events ke pasangan clock-in/out per work_date + shift.
 /// Aturan: untuk shift malam, event antara 00:00–(end+limit) dikaitkan ke work_date-1.
-/// Mengembalikan map work_date -> DayEvents.
+/// Arah event ('in'/'out') dipakai bila perangkat mengirimkannya: clock-in hanya
+/// dari event 'in' ('' = default perangkat lama, ikut 'in'), clock-out hanya 'out'.
+/// Perangkat tanpa mode in/out (semua punch 'in') → heuristik urutan waktu lama.
 pub fn group_events_for_shift(
     shift: &ShiftRule,
     work_date: &NaiveDate,
-    mut events: Vec<NaiveDateTime>,
+    mut events: Vec<(NaiveDateTime, String)>,
 ) -> DayEvents {
     let (earliest, latest_out) = shift.accept_bounds(work_date);
-    events.sort();
-    let in_win: Vec<NaiveDateTime> = events
+    events.sort_by_key(|a| a.0);
+    let in_win: Vec<(NaiveDateTime, String)> = events
         .into_iter()
-        .filter(|t| *t >= earliest && *t <= latest_out)
+        .filter(|(t, _)| *t >= earliest && *t <= latest_out)
         .collect();
     if in_win.is_empty() {
         return DayEvents {
@@ -467,18 +481,68 @@ pub fn group_events_for_shift(
             duplicate_count: 0,
         };
     }
-    let ci = in_win[0];
-    // Duplikat = event < 5 menit setelah clock-in (pembacaan ulang ganda).
+    if !in_win.iter().any(|(_, d)| d == "out") {
+        // Tidak ada punch 'out' sama sekali → perangkat modeless (semua
+        // dibaca 'in'): kembali ke heuristik lama agar clock-out tidak
+        // hilang untuk unit pintu/kartu satu-arah.
+        return group_direction_agnostic(in_win.into_iter().map(|(t, _)| t).collect());
+    }
+    // Perangkat bermode in/out: pilih berdasar arah — punch keluar di ujung
+    // jendela TIDAK boleh dianggap masuk shift pagi berikutnya.
+    let ins: Vec<NaiveDateTime> = in_win
+        .iter()
+        .filter(|(_, d)| d == "in" || d.is_empty())
+        .map(|(t, _)| *t)
+        .collect();
+    let outs: Vec<NaiveDateTime> = in_win
+        .iter()
+        .filter(|(_, d)| d == "out")
+        .map(|(t, _)| *t)
+        .collect();
+    let Some(ci) = ins.first().copied() else {
+        // Hanya punch 'out' di jendela ini — bukan mulai shift; jangan karang
+        // kehadiran dari event keluar (biar tantang review, bukan palsu).
+        return DayEvents {
+            clock_in: None,
+            clock_out: None,
+            duplicate_count: 0,
+        };
+    };
+    // Duplikat = pembacaan ulang ganda < 5 menit setelah clock-in.
     let dup = in_win
+        .iter()
+        .skip(1)
+        .filter(|(t, _)| (*t - ci).num_minutes() < 5)
+        .count() as i64;
+    // Clock-out = punch 'out' TERAKHIR ≥5 menit setelah clock-in.
+    let co = outs
+        .into_iter()
+        .rev()
+        .find(|t| (*t - ci).num_minutes() >= 5);
+    DayEvents {
+        clock_in: Some(ci),
+        clock_out: co,
+        duplicate_count: dup,
+    }
+}
+
+/// Heuristik lama (tanpa arah): event terakhir yang ≥5 menit setelah event
+/// pertama adalah clock-out; klaster pembacaan ganda tetap tidak jadi clock-out.
+fn group_direction_agnostic(events: Vec<NaiveDateTime>) -> DayEvents {
+    if events.is_empty() {
+        return DayEvents {
+            clock_in: None,
+            clock_out: None,
+            duplicate_count: 0,
+        };
+    }
+    let ci = events[0];
+    let dup = events
         .iter()
         .skip(1)
         .filter(|t| (**t - ci).num_minutes() < 5)
         .count() as i64;
-    // Clock-out = event TERAKHIR yang benar-benar setelah clock-in (≥5 menit).
-    // Klaster duplikat di pintu masuk (mis. 07:00,07:02,07:04) tidak boleh
-    // dihitung sebagai clock-out 0 menit — jika tidak ada event ≥5 menit
-    // setelah clock-in, hari ini belum punya valid clock-out (incomplete).
-    let co = in_win
+    let co = events
         .iter()
         .rev()
         .find(|t| (**t - ci).num_minutes() >= 5)
@@ -534,6 +598,10 @@ mod tests {
     fn dt(s: &str) -> NaiveDateTime {
         NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").unwrap()
     }
+    /// Event berarah ('in'/'out'/'') untuk pengelompokan.
+    fn ev(ts: &str, dir: &str) -> (NaiveDateTime, String) {
+        (dt(ts), dir.to_string())
+    }
     fn d(s: &str) -> NaiveDate {
         NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
     }
@@ -566,14 +634,61 @@ mod tests {
             &pagi(),
             &d("2026-05-04"),
             vec![
-                dt("2026-05-04 07:00:00"),
-                dt("2026-05-04 07:02:00"),
-                dt("2026-05-04 07:04:00"),
+                ev("2026-05-04 07:00:00", "in"),
+                ev("2026-05-04 07:02:00", "in"),
+                ev("2026-05-04 07:04:00", "in"),
             ],
         );
         assert_eq!(inp.duplicate_count, 2);
         assert!(inp.clock_out.is_none());
         assert_eq!(inp.clock_in, Some(dt("2026-05-04 07:00:00")));
+    }
+
+    #[test]
+    fn modeless_semua_in_tetap_dapat_clock_out() {
+        // Perangkat tanpa mode in/out: semua punch 'in'. Heuristik urutan
+        // waktu harus tetap hidup (clock-out bukan NULL palsu).
+        let g = group_events_for_shift(
+            &pagi(),
+            &d("2026-05-04"),
+            vec![
+                ev("2026-05-04 07:00:00", "in"),
+                ev("2026-05-04 15:05:00", "in"),
+            ],
+        );
+        assert_eq!(g.clock_in, Some(dt("2026-05-04 07:00:00")));
+        assert_eq!(g.clock_out, Some(dt("2026-05-04 15:05:00")));
+    }
+
+    #[test]
+    fn punch_out_malam_tidak_jadi_clock_in_pagi() {
+        // Kasus lintas shift: shift MALAM masuk Senin 23:20 (in) dan keluar
+        // Selasa 06:58 (out). Jendela PAGI Selasa (07:00±geser memuat 06:58
+        // bila limit.masuk-awal menarik) TIDAK BOLEH membuat clock-in 06:58
+        // dari punch keluar milik shift malam.
+        let g = group_events_for_shift(
+            &pagi(),
+            &d("2026-05-05"),
+            vec![
+                ev("2026-05-05 06:58:00", "out"),
+                ev("2026-05-05 09:10:00", "in"),
+            ],
+        );
+        // punch 'out' tak berhak jadi clock-in; clock-in = punch 'in' berikut
+        assert_eq!(g.clock_in, Some(dt("2026-05-05 09:10:00")));
+        // TIDAK ada punch 'out' setelah clock-in 09:10 → belum keluar
+        assert!(g.clock_out.is_none());
+    }
+
+    #[test]
+    fn hanya_punch_out_di_jendela_tidak_karang_kehadiran() {
+        let g = group_events_for_shift(
+            &pagi(),
+            &d("2026-05-05"),
+            vec![ev("2026-05-05 06:58:00", "out")],
+        );
+        assert!(g.clock_in.is_none() && g.clock_out.is_none());
+        assert_eq!(g.duplicate_count, 0);
     }
 
     #[test]
@@ -587,6 +702,17 @@ mod tests {
         assert!(!sh.applies_to_weekday(&min));
         // Sabtu juga di luar jadwal Sen-Jum.
         assert!(!sh.applies_to_weekday(&d("2026-05-09")));
+    }
+
+    #[test]
+    fn kalender_khusus_menang_diatas_pola_mingguan() {
+        // Kalender "kerja" pada hari libur mingguan = hari kerja khusus.
+        assert!(!resolve_day_off(Some("kerja"), false));
+        // Kalender "libur" menalangi hari kerja reguler.
+        assert!(resolve_day_off(Some("libur"), true));
+        // Tanpa kalender: ikuti pola mingguan.
+        assert!(resolve_day_off(None, false));
+        assert!(!resolve_day_off(None, true));
     }
 
     #[test]
@@ -666,7 +792,10 @@ mod tests {
     #[test]
     fn grouping_malam_menarik_event_setelah_tengah_malam() {
         let s = malam();
-        let ev = vec![dt("2026-05-04 23:05:00"), dt("2026-05-05 06:58:00")];
+        let ev = vec![
+            ev("2026-05-04 23:05:00", "in"),
+            ev("2026-05-05 06:58:00", "out"),
+        ];
         let g = group_events_for_shift(&s, &d("2026-05-04"), ev);
         assert!(g.clock_in.is_some() && g.clock_out.is_some());
     }

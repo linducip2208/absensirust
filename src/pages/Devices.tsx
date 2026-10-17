@@ -177,7 +177,7 @@ export default function Devices() {
         </div>
       </div>
       <div key={refreshKey}>
-        <Crud table="devices" title="Perangkat" columns={COLUMNS} orderBy="name" initialSearch={fromSearch} />
+        <Crud key={`d-${fromSearch}`} table="devices" title="Perangkat" columns={COLUMNS} orderBy="name" initialSearch={fromSearch} />
       </div>
       <div className="card mt-3">
         <div className="card-header"><h3 className="card-title">Uji & sinkronisasi cepat</h3></div>

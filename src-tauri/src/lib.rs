@@ -65,7 +65,7 @@ pub mod commands {
         // Data lama yang korup tak boleh membuat mesin hitung panic.
         if !attendance::valid_hm(start) || !attendance::valid_hm(end) {
             return Err(AppError::Validation(format!(
-                "jam shift rusak di database ({start}–{end}); perbaiki via menu Shift"
+                "jam shift rusak di database ({start}â€“{end}); perbaiki via menu Shift"
             )));
         }
         Ok(attendance::ShiftRule::from_row(
@@ -200,10 +200,21 @@ pub mod commands {
         let libur: i64 = r.query_one(
         "SELECT COUNT(*) FROM attendance_results WHERE work_date=?1 AND status IN ('Holiday','DayOff')", &[&d], |x| x.get(0))?.unwrap_or(0);
         // Barisan belum sah (jendela belum berakhir / butuh review) BUKAN
-        // mangkiran — jangan dimasukkan "tidak hadir".
+        // mangkiran â€” jangan dimasukkan "tidak hadir".
         let belum_lengkap: i64 = r.query_one(
         "SELECT COUNT(*) FROM attendance_results WHERE work_date=?1 AND status IN ('Incomplete','NeedsReview')", &[&d], |x| x.get(0))?.unwrap_or(0);
-        let tidak_hadir = (active_emp - hadir - cuti - libur - belum_lengkap).max(0);
+        // Jujur: yang belum dihitung = aktif minus baris hasil yang sudah
+        // ada (belum diproses mesin / jendela shift masih berjalan) —
+        // JANGAN dihitung mangkir.
+        let rows_written: i64 = r
+            .query_one(
+                "SELECT COUNT(*) FROM attendance_results WHERE work_date=?1",
+                &[&d],
+                |x| x.get(0),
+            )?
+            .unwrap_or(0);
+        let belum_dihitung = (active_emp - rows_written).max(0);
+        let tidak_hadir = (rows_written - hadir - cuti - libur - belum_lengkap).max(0);
         let dev_total = q("SELECT COUNT(*) FROM devices WHERE is_active=1");
         let dev_online = q("SELECT COUNT(*) FROM devices WHERE is_active=1 AND status='online'");
         let dev_offline = q("SELECT COUNT(*) FROM devices WHERE is_active=1 AND status='offline'");
@@ -234,7 +245,7 @@ pub mod commands {
     )?;
         Ok(serde_json::json!({
             "date": d, "active_employees": active_emp, "hadir": hadir, "terlambat": terlambat,
-            "tidak_hadir": tidak_hadir, "cuti_izin": cuti,
+            "tidak_hadir": tidak_hadir, "belum_dihitung": belum_dihitung, "cuti_izin": cuti,
             "devices": {"total": dev_total, "online": dev_online, "offline": dev_offline, "error": dev_error},
             "daily": daily, "recent": recent, "shifts": shifts,
             "last_sync": last_sync, "alerts": alerts,
@@ -243,18 +254,34 @@ pub mod commands {
 
     // ---------- generic table API (dengan permission) ----------
     fn check_table_perm(s: &auth::Session, table: &str, write: bool) -> AppResult<()> {
-        // Tabel hasil mesin/audit/pengaturan tidak pernah diizinkan lewat CRUD
-        // generik — wajib lewat command khusus (engine/correction/requeue/
-        // insert_audit/settings_set) dengan permission masing-masing.
-        if matches!(
-            table,
-            "attendance_results" | "raw_events" | "audit_log" | "app_settings"
-        ) {
+        // Tabel hasil mesin/audit/pengaturan: TULIS selalu lewat command khusus
+        // (engine/correction/requeue/insert_audit/settings_set). BACA tetap
+        // terbuka untuk yang berhak agar UI tidak menampilkan "kosong" palsu.
+        if write
+            && matches!(
+                table,
+                "attendance_results" | "raw_events" | "audit_log" | "app_settings"
+            )
+        {
             return Err(AppError::Forbidden(format!(
                 "tabel {table} hanya diubah via sistem, tidak via CRUD generik"
             )));
         }
+        if table == "raw_events" && !write {
+            return Err(AppError::Forbidden(
+                "tabel raw_events tidak terbuka via CRUD (lihat laporan & antrean)".into(),
+            ));
+        }
+        if table == "app_settings" {
+            return Err(AppError::Validation(
+                "pengaturan diubah via menu Pengaturan".into(),
+            ));
+        }
         let need = match table {
+            // hasil engine: mesin tulis; manusia hanya membaca
+            "attendance_results" => "attendance.view",
+            // jejak audit: hanya dibaca (penulisan lewat insert_audit internal)
+            "audit_log" => "user.view",
             "employees" | "branches" | "departments" | "positions" | "employee_device_map" => {
                 if write {
                     "employee.manage"
@@ -290,8 +317,7 @@ pub mod commands {
                     "shift.view"
                 }
             }
-            "app_settings" => "user.manage",
-            "users" | "audit_log" => {
+            "users" => {
                 if write {
                     "user.manage"
                 } else {
@@ -595,21 +621,36 @@ pub mod commands {
         } else {
             "ASC"
         };
-        // Search sederhana pada kolom teks utama.
+        // Search sederhana pada kolom teks utama (nama/kode/user-id — bukan
+        // kolom teknis) — fallback: kolom pertama (id, agar paste-id bisa).
         let text_col = match table.as_str() {
             "employees" => "name",
             "devices" => "name",
             "shifts" => "name",
             "branches" => "name",
             "departments" => "name",
+            "positions" => "name",
             "users" => "username",
+            "leave_requests" | "overtime_requests" => "reason",
+            "leave_types" => "code",
+            "holidays" => "name",
+            "work_calendar" => "description",
+            "corrections_audit" => "reason",
+            "employee_device_map" => "device_user_id",
+            "employee_history" => "field_name",
             _ => cols[0],
         };
-        let like = format!("%{search}%");
+        // Karakter wildcard dari input di-escape agar pencarian harfiah.
+        let escaped = search
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let like = format!("%{escaped}%");
         let base = format!(
-            "SELECT * FROM {table} WHERE (?1='' OR {text_col} LIKE ?1) ORDER BY {ob} {dir}"
+            "SELECT * FROM {table} WHERE (?1='' OR {text_col} LIKE ?1 ESCAPE '\\') ORDER BY {ob} {dir}"
         );
-        let count_sql = format!("SELECT COUNT(*) FROM {table} WHERE (?1='' OR {text_col} LIKE ?1)");
+        let count_sql =
+            format!("SELECT COUNT(*) FROM {table} WHERE (?1='' OR {text_col} LIKE ?1 ESCAPE '\\')");
         let like_s = like.as_str();
         let (rows, total) = state
             .repo
@@ -689,8 +730,20 @@ pub mod commands {
         }
         let id = uid();
         let ts = now();
-        let (keys, vals) = insert_parts(cols, &table, &data, &id, &ts);
         validate_required(&table, &data)?;
+        // Shift: pastikan hari berlaku selalu valid (kosong â†’ Seninâ€“Jumat)
+        // sehingga tidak pernah jatuh ke default DB konvensi lama.
+        let mut data2 = data.clone();
+        if table == "shifts" {
+            let cur = data2
+                .get("applicable_days")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
+            let norm = normalize_applicable_days(&cur)?;
+            data2["applicable_days"] = serde_json::Value::String(norm);
+        }
+        let (keys, vals) = insert_parts(cols, &table, &data2, &id, &ts);
         let placeholders: Vec<String> = (1..=keys.len()).map(|i| format!("?{i}")).collect();
         let sql = format!(
             "INSERT INTO {table} ({}) VALUES ({})",
@@ -749,8 +802,8 @@ pub mod commands {
     }
 
     /// Susun SET UPDATE yang aman + validasi role + hash password.
-    /// Mengembalikan (sets, vals). Aturan: null → SET NULL, '' → pertahankan
-    /// nilai lama, password kosong → abaikan, password isi → hash Argon2.
+    /// Mengembalikan (sets, vals). Aturan: null â†’ SET NULL, '' â†’ pertahankan
+    /// nilai lama, password kosong â†’ abaikan, password isi â†’ hash Argon2.
     fn update_parts(
         table: &str,
         data: &serde_json::Value,
@@ -765,7 +818,7 @@ pub mod commands {
             if k == "password_hash" {
                 continue;
             }
-            // "password" virtual (tak ada di kolom) → hash ke password_hash.
+            // "password" virtual (tak ada di kolom) â†’ hash ke password_hash.
             if k == "password" {
                 let plain = match v {
                     serde_json::Value::String(x) => x,
@@ -802,7 +855,7 @@ pub mod commands {
             sets.push(format!("{k}=?"));
             vals.push(match v {
                 serde_json::Value::String(x) => x,
-                // Bool → 1/0 (kolom INTEGER): "true"/"false" merusak filter is_active.
+                // Bool â†’ 1/0 (kolom INTEGER): "true"/"false" merusak filter is_active.
                 serde_json::Value::Bool(b) => {
                     if b {
                         "1".into()
@@ -945,7 +998,7 @@ pub mod commands {
             validate_shift_times(data)?;
         }
         // Tanggal & angka protek awal: tulisan tidak-semak masuk DB sampai
-        // merusak perhitungan (mis. rentang izin terbalik → saldo minus).
+        // merusak perhitungan (mis. rentang izin terbalik â†’ saldo minus).
         const DATE_COLS: &[(&str, &[&str])] = &[
             ("leave_requests", &["start_date", "end_date"]),
             ("holidays", &["holiday_date"]),
@@ -998,16 +1051,122 @@ pub mod commands {
                 }
             }
         }
+        validate_value_rules(table, data)?;
+        guard_request_columns(table, data)?;
         Ok(())
     }
 
-    /// Jam tak valid (mis. 25:00) akan panic di mesin hitung — tolak saat tulis.
+    /// Validasi nilai kolom yang berlaku untuk create maupun update
+    /// (data update bisa parsial â€” hanya kunci yang dikirim yang dicek).
+    fn validate_value_rules(table: &str, data: &serde_json::Value) -> AppResult<()> {
+        if table == "shifts" {
+            if let Some(v) = data.get("applicable_days").and_then(|x| x.as_str()) {
+                if !v.trim().is_empty() {
+                    normalize_applicable_days(v)?;
+                }
+            }
+        }
+        if table == "attendance_policy" {
+            for (k, min) in [("rounding_minutes", 1i64), ("max_early_minutes", 0)] {
+                if let Some(v) = data.get(k) {
+                    let n = match v {
+                        serde_json::Value::Number(n) => n.as_i64(),
+                        serde_json::Value::String(s) => s.trim().parse::<i64>().ok(),
+                        _ => None,
+                    };
+                    if !matches!(n, Some(x) if x >= min) {
+                        return Err(AppError::Validation(format!("{k} harus bilangan >= {min}")));
+                    }
+                }
+            }
+            for k in ["require_overtime_approval", "allow_double_shift"] {
+                if let Some(v) = data.get(k) {
+                    let s = match v {
+                        serde_json::Value::String(x) => x.clone(),
+                        x => x.to_string(),
+                    };
+                    if s != "0" && s != "1" {
+                        return Err(AppError::Validation(format!("{k} harus 0 atau 1")));
+                    }
+                }
+            }
+        }
+        if table == "leave_types" {
+            if let Some(v) = data.get("quota_days") {
+                let n = match v {
+                    serde_json::Value::Number(n) => n.as_i64(),
+                    serde_json::Value::String(s) => s.trim().parse::<i64>().ok(),
+                    _ => None,
+                };
+                if !matches!(n, Some(x) if x >= 0) {
+                    return Err(AppError::Validation(
+                        "quota_days harus bilangan >= 0".into(),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Kolom status/persetujuan pengajuan izin & lembur diatur sistem:
+    /// mulai 'pending' saat dibuat, berubah hanya lewat Setujui/Tolak
+    /// (apply_leave_decision / apply_overtime_decision) agar approved_by
+    /// dan decided_at selalu ikut terisi.
+    fn guard_request_columns(table: &str, data: &serde_json::Value) -> AppResult<()> {
+        if matches!(table, "leave_requests" | "overtime_requests") {
+            for k in ["status", "approved_by", "decided_at"] {
+                if data.get(k).is_some() {
+                    return Err(AppError::Validation(format!(
+                        "kolom {k} diatur lewat keputusan (Setujui/Tolak), bukan lewat form"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Normalisasi hari berlaku shift: token 0..=6 (0=Senin..6=Minggu),
+    /// unik, minimal satu; string kosong â†’ default Seninâ€“Jumat.
+    fn normalize_applicable_days(raw: &str) -> AppResult<String> {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            return Ok("0,1,2,3,4".into());
+        }
+        let mut seen = [false; 7];
+        let mut out: Vec<String> = vec![];
+        for tok in raw.split(',') {
+            let n = tok.trim().parse::<u8>().map_err(|_| {
+                AppError::Validation(
+                    "hari berlaku harus angka 0..=6 (0=Senin..6=Minggu), dipisah koma".into(),
+                )
+            })?;
+            if n > 6 {
+                return Err(AppError::Validation(
+                    "hari berlaku harus 0..=6 (0=Senin..6=Minggu)".into(),
+                ));
+            }
+            if seen[n as usize] {
+                return Err(AppError::Validation("hari berlaku ada yang ganda".into()));
+            }
+            seen[n as usize] = true;
+            out.push(n.to_string());
+        }
+        if out.is_empty() {
+            return Err(AppError::Validation(
+                "hari berlaku minimal satu hari".into(),
+            ));
+        }
+        out.sort();
+        Ok(out.join(","))
+    }
+
+    /// Jam tak valid (mis. 25:00) akan panic di mesin hitung â€” tolak saat tulis.
     fn validate_shift_times(data: &serde_json::Value) -> AppResult<()> {
         for k in ["start_time", "end_time"] {
             if let Some(v) = data.get(k).and_then(|x| x.as_str()) {
                 if !v.is_empty() && !attendance::valid_hm(v) {
                     return Err(AppError::Validation(format!(
-                        "{k} harus HH:MM (00:00–23:59)"
+                        "{k} harus HH:MM (00:00â€“23:59)"
                     )));
                 }
             }
@@ -1100,6 +1259,8 @@ pub mod commands {
         if table == "shifts" {
             validate_shift_times(&data)?;
         }
+        validate_value_rules(&table, &data)?;
+        guard_request_columns(&table, &data)?;
         let (mut sets, mut vals) = update_parts(&table, &data)?;
         if sets.is_empty() {
             return Err(AppError::Validation("tidak ada kolom yang diubah".into()));
@@ -1280,7 +1441,7 @@ pub mod commands {
         let Some((did, host, adapter_name, config_json)) = row else {
             return Err(AppError::NotFound("perangkat".into()));
         };
-        let mut a = sync::service::build_adapter(&adapter_name, &config_json);
+        let mut a = sync::service::build_adapter(&adapter_name, &config_json)?;
         let t0 = std::time::Instant::now();
         let host_s: &str = if host.is_empty() {
             "local"
@@ -1346,7 +1507,7 @@ pub mod commands {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )?
             .ok_or_else(|| AppError::NotFound("perangkat".into()))?;
-        let mut a = sync::service::build_adapter(&adapter_name, &config_json);
+        let mut a = sync::service::build_adapter(&adapter_name, &config_json)?;
         let cancel = AtomicBool::new(false);
         let stats = sync::service::sync_device(&state.repo, &device_id, &mut a, 3, 200, &cancel)?;
         Ok(serde_json::to_value(stats).unwrap())
@@ -1358,13 +1519,13 @@ pub mod commands {
         token: String,
     ) -> Result<serde_json::Value, AppError> {
         // Info adapter = data produk/SDK: tetap butuh sesi (konsisten
-        // command info lain; dulu tanpa auth — bisa excavator pre-login).
+        // command info lain; dulu tanpa auth â€” bisa excavator pre-login).
         require(&state, &token, "device.view")?;
         Ok(serde_json::to_value(devices::registry::DeviceRegistry::entries()).unwrap())
     }
 
     /// Status DLL vendor di mesin ini (ditemukan? arsitektur x64? terdaftar/
-    /// termuat?) — tanpa butuh perangkat. Untuk indikator "SDK belum dipasang".
+    /// termuat?) â€” tanpa butuh perangkat. Untuk indikator "SDK belum dipasang".
     #[tauri::command]
     pub fn device_sdk_status(
         state: tauri::State<AppState>,
@@ -1429,7 +1590,7 @@ pub mod commands {
     )?.unwrap_or((1, 1));
         let wd = check_work_date(&work_date)?;
         // Tanggal kanonikal zero-padded untuk semua pembanding TEXT di SQL
-        // (kolom tanggal/format id) — jangan pakai input mentah pemanggil.
+        // (kolom tanggal/format id) â€” jangan pakai input mentah pemanggil.
         let date_s = wd.format("%Y-%m-%d").to_string();
         let is_holiday: bool = state
             .repo
@@ -1446,6 +1607,7 @@ pub mod commands {
         let mut skipped_no_schedule = 0i64;
         let mut skipped_invalid = 0i64;
         let mut skipped_waiting = 0i64;
+        let mut skipped_manual = 0i64;
         for (eid,) in emps {
             // assignment efektif terbaru
             let shift_id: Option<(String,)> = state.repo.query_one(
@@ -1488,22 +1650,37 @@ pub mod commands {
                     continue;
                 }
             };
-            // kumpulkan event karyawan (via mapping + event langsung bila device_user cocok nik? hanya via mapping)
-            let maps: Vec<String> = state.repo.query_rows(
-                "SELECT device_user_id FROM employee_device_map WHERE employee_id=?1",
+            // Lindungi koreksi manual: baris yang sudah dikoreksi admin
+            // TIDAK dihitung ulang mesin (koreksi tidak lenyap diam-diam).
+            let corrected: i64 = state
+                .repo
+                .query_one(
+                    "SELECT manually_corrected FROM attendance_results WHERE employee_id=?1 AND work_date=?2",
+                    &[&eid, &date_s],
+                    |r| r.get(0),
+                )?
+                .unwrap_or(0);
+            if corrected != 0 {
+                skipped_manual += 1;
+                continue;
+            }
+            // kumpulkan event karyawan â€” dipetakan per (device_id, device_user_id)
+            // agar user-id sama di dua perangkat tidak tercampur (id unik per pasangan).
+            let maps: Vec<(String, String)> = state.repo.query_rows(
+                "SELECT device_id, device_user_id FROM employee_device_map WHERE employee_id=?1",
                 &[&eid],
-                |r| r.get(0),
-            )?;
-            let mut ev_all: Vec<(String, chrono::NaiveDateTime)> = vec![];
-            for du in &maps {
-                let rows: Vec<(String, String)> = state.repo.query_rows(
-                "SELECT id, event_time FROM raw_events WHERE device_user_id=?1 AND event_time >= ?2 AND event_time <= ?3 ORDER BY event_time",
-                &[du, &format!("{date_s} 00:00:00"), &format!("{} 23:59:59", (wd + chrono::Duration::days(1)).format("%Y-%m-%d"))],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )?;
-                for (rid, t) in rows {
+            let mut ev_all: Vec<(String, chrono::NaiveDateTime, String)> = vec![];
+            for (dev_id, du) in &maps {
+                let rows: Vec<(String, String, String)> = state.repo.query_rows(
+                "SELECT id, event_time, direction FROM raw_events WHERE device_id=?1 AND device_user_id=?2 AND event_time >= ?3 AND event_time <= ?4 ORDER BY event_time",
+                &[dev_id, du, &format!("{date_s} 00:00:00"), &format!("{} 23:59:59", (wd + chrono::Duration::days(1)).format("%Y-%m-%d"))],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )?;
+                for (rid, t, dir) in rows {
                     match timex::parse_wib(&t) {
-                        Some(dt) => ev_all.push((rid, dt)),
+                        Some(dt) => ev_all.push((rid, dt, dir)),
                         None => {
                             // Waktu korup: jangan tandai processed, hitung sebagai dilewati.
                             log::warn!("event {rid} waktu korup: {t}");
@@ -1512,7 +1689,8 @@ pub mod commands {
                     }
                 }
             }
-            let ev_times: Vec<chrono::NaiveDateTime> = ev_all.iter().map(|(_, dt)| *dt).collect();
+            let ev_times: Vec<(chrono::NaiveDateTime, String)> =
+                ev_all.iter().map(|(_, dt, d)| (*dt, d.clone())).collect();
             let ev_cnt = ev_times.len();
             let grouped = attendance::group_events_for_shift(&shift, &wd, ev_times);
             // Hanya event di dalam window shift yang ditandai processed;
@@ -1520,8 +1698,8 @@ pub mod commands {
             let (earliest, latest_out) = shift.accept_bounds(&wd);
             let used_ids: Vec<String> = ev_all
                 .into_iter()
-                .filter(|(_, dt)| *dt >= earliest && *dt <= latest_out)
-                .map(|(rid, _)| rid)
+                .filter(|(_, dt, _)| *dt >= earliest && *dt <= latest_out)
+                .map(|(rid, _, _)| rid)
                 .collect();
             let on_leave_set: Vec<String> = state.repo.query_rows(
             "SELECT lt.code FROM leave_requests lr JOIN leave_types lt ON lt.id=lr.leave_type_id WHERE lr.employee_id=?1 AND lr.status='approved' AND lr.start_date<=?2 AND lr.end_date>=?2",
@@ -1533,8 +1711,8 @@ pub mod commands {
                 &[&date_s],
                 |r| r.get(0),
             )?;
-            let is_day_off = matches!(cal_kind.as_deref(), Some(k) if k != "kerja")
-                || !shift.applies_to_weekday(&wd);
+            let is_day_off =
+                attendance::resolve_day_off(cal_kind.as_deref(), shift.applies_to_weekday(&wd));
             let ot_appr: i64 = state.repo.query_one(
             "SELECT COALESCE(SUM(minutes_requested),0) FROM overtime_requests WHERE employee_id=?1 AND work_date=?2 AND status='approved'",
             &[&eid, &date_s], |r| r.get(0))?.unwrap_or(0);
@@ -1552,7 +1730,7 @@ pub mod commands {
             };
             let o = attendance::compute_day(&inp);
             // Jujur dihitung: hari belum selesai (jendela shift belum
-            // berakhir) dan tanpa event — jangan tulis "Absent" sedari awal;
+            // berakhir) dan tanpa event â€” jangan tulis "Absent" sedari awal;
             // biarkan belum dihitung dan hitung ulang nanti (atau besok).
             if o.status == attendance::AttendanceStatus::Absent
                 && ev_cnt == 0
@@ -1591,6 +1769,7 @@ pub mod commands {
             "skipped_no_schedule": skipped_no_schedule,
             "skipped_invalid_time": skipped_invalid,
             "skipped_window_not_ended": skipped_waiting,
+            "skipped_manual": skipped_manual,
         }))
     }
 
@@ -1669,8 +1848,13 @@ pub mod commands {
             |r| r.get(0),
         )?;
         let _ = exists.ok_or_else(|| AppError::NotFound("absensi".into()))?;
+        let new_value = new_value.trim().to_string();
         let old = old.unwrap_or_default();
-        let sql = format!("UPDATE attendance_results SET {field}=?1, computed_at=?2 WHERE id=?3");
+        // Tandai baris sebagai koreksi manual: hitung ulang mesin akan
+        // melewatinya (lihat attendance_compute) â€” koreksi tidak pernah lenyap.
+        let sql = format!(
+            "UPDATE attendance_results SET {field}=?1, computed_at=?2, manually_corrected=1 WHERE id=?3"
+        );
         let ts = now();
         state.repo.exec(&sql, &[&new_value, &ts, &attendance_id])?;
         let cid = uid();
@@ -1800,7 +1984,7 @@ pub mod commands {
         let d = chrono::NaiveDate::parse_from_str(s2, "%Y-%m-%d")
             .map_err(|_| AppError::Validation(format!("tanggal harus YYYY-MM-DD: {s}")))?;
         // Tolak format longgar (mis. "2026-1-5"): semua pembanding SQL pada
-        // kolom TEXT tanggal mengandalkan bentuk zero-padded — bentuk longgar
+        // kolom TEXT tanggal mengandalkan bentuk zero-padded â€” bentuk longgar
         // membuat event/jadwal tidak cocok & id hasil absen tergandakan.
         if d.format("%Y-%m-%d").to_string() != s2 {
             return Err(AppError::Validation(format!(
@@ -1880,7 +2064,7 @@ pub mod commands {
         )
     }
 
-    /// end_date kosong/NULL → batas atas tak berhingga untuk perbandingan string.
+    /// end_date kosong/NULL â†’ batas atas tak berhingga untuk perbandingan string.
     fn new_end_or_max(end: &str) -> String {
         if end.trim().is_empty() {
             "9999-12-31".to_string()
@@ -2067,7 +2251,7 @@ pub mod commands {
                 continue;
             }
             // Bentrok: penugasan APAPUN (termasuk shift sama) yang tumpang tindih
-            // rentang — duplikat range shift sama juga ditolak agar jadwal tegas.
+            // rentang â€” duplikat range shift sama juga ditolak agar jadwal tegas.
             let clash: Vec<(String, String, String)> = state.repo.query_rows(
                 "SELECT s.code, a.effective_date, COALESCE(a.end_date,'') FROM shift_assignments a JOIN shifts s ON s.id=a.shift_id
                  WHERE a.employee_id=?1 AND a.effective_date<=?2 AND (a.end_date IS NULL OR a.end_date>=?3)",
@@ -2077,7 +2261,7 @@ pub mod commands {
             if !clash.is_empty() {
                 skipped.push(serde_json::json!({
                     "employee_id": eid,
-                    "reason": format!("bentrok/sudah ada penugasan {} ({} s/d {})", clash[0].0, clash[0].1, if clash[0].2.is_empty() { "…" } else { &clash[0].2 }),
+                    "reason": format!("bentrok/sudah ada penugasan {} ({} s/d {})", clash[0].0, clash[0].1, if clash[0].2.is_empty() { "â€¦" } else { &clash[0].2 }),
                 }));
                 continue;
             }
@@ -2344,7 +2528,7 @@ pub mod commands {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )?
             .ok_or_else(|| AppError::NotFound("perangkat".into()))?;
-        let mut a = sync::service::build_adapter(&adapter_name, &config_json);
+        let mut a = sync::service::build_adapter(&adapter_name, &config_json)?;
         let cancel = AtomicBool::new(false);
         sync::service::sync_device(repo, device_id, &mut a, 3, 200, &cancel)
     }
@@ -2420,8 +2604,8 @@ pub mod commands {
         state
             .sched_enabled
             .store(enabled, std::sync::atomic::Ordering::Relaxed);
-        // Kepemilikan task eksplisit: enable → task lama di-abort lalu task
-        // baru di-spawn; disable → abort segera. Tidak ada race "running
+        // Kepemilikan task eksplisit: enable â†’ task lama di-abort lalu task
+        // baru di-spawn; disable â†’ abort segera. Tidak ada race "running
         // masih true karena task lama belum sempat menyimpan false" seperti
         // versi dua-boolean sebelumnya.
         let mut slot = state
@@ -2511,14 +2695,25 @@ pub mod commands {
                                 .parent()
                                 .map(|p| p.join("backups"))
                                 .unwrap_or("backups".into());
-                            if let Ok(dest) = backup::backup_db(&st.db_path, &dir, keep.max(1)) {
-                                log::info!("backup otomatis: {}", dest.display());
-                                let ts = timex::now_wib_string();
-                                let _ = st.repo.exec(
-                                    "INSERT INTO app_settings (key, value, updated_at) VALUES ('backup_last_auto',?1,?2)
-                                     ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
-                                    &[&today, &ts],
-                                );
+                            // Checkpoint dulu agar data terbaru (masih di WAL)
+                            // ikut tersalin, lalu salin + validasi file backup.
+                            let copied = st
+                                .repo
+                                .checkpoint_wal()
+                                .and_then(|_| backup::backup_db(&st.db_path, &dir, keep.max(1)));
+                            match copied {
+                                Ok(dest) => {
+                                    log::info!("backup otomatis: {}", dest.display());
+                                    let ts = timex::now_wib_string();
+                                    let _ = st.repo.exec(
+                                        "INSERT INTO app_settings (key, value, updated_at) VALUES ('backup_last_auto',?1,?2)
+                                         ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                                        &[&today, &ts],
+                                    );
+                                }
+                                Err(e) => {
+                                    log::error!("backup otomatis gagal: {e}");
+                                }
                             }
                         }
                     }
@@ -2897,7 +3092,7 @@ pub mod commands {
                  WHERE {} GROUP BY substr(a.work_date,1,7), e.id ORDER BY 1, e.name LIMIT 2000",
                 cond.join(" AND ")),
             // Laporan log/mesin: filter karyawan/departemen/shift tidak berlaku
-            // (sumbernya bukan tabel hasil) — hanya rentang waktu yang dipakai.
+            // (sumbernya bukan tabel hasil) â€” hanya rentang waktu yang dipakai.
             "log_perangkat" => "SELECT event_time, device_id, device_user_id, direction, status FROM raw_events
                   WHERE event_time>=?1 AND event_time<=?2 ORDER BY event_time LIMIT 2000"
                 .to_string(),
@@ -3035,7 +3230,7 @@ pub mod commands {
                 Ok(serde_json::json!({"format": "xlsx", "base64": base64_encode(&b)}))
             }
             "pdf" => {
-                let meta = format!("Dibuat: {} WIB · jenis: {kind}", now());
+                let meta = format!("Dibuat: {} WIB Â· jenis: {kind}", now());
                 let b = reports::export::to_pdf(&title, &meta, &headers, &rows);
                 Ok(serde_json::json!({"format": "pdf", "base64": base64_encode(&b)}))
             }
@@ -3132,7 +3327,7 @@ pub mod commands {
             "-",
             &got.display().to_string(),
         )?;
-        Ok("ok — database hasil restore sudah aktif".into())
+        Ok("ok â€” database hasil restore sudah aktif".into())
     }
 
     #[tauri::command]
@@ -3207,7 +3402,7 @@ pub mod commands {
         let Some((_did, host, adapter_name, config_json)) = row else {
             return Err(AppError::NotFound("perangkat".into()));
         };
-        let mut a = sync::service::build_adapter(&adapter_name, &config_json);
+        let mut a = sync::service::build_adapter(&adapter_name, &config_json)?;
         a.initialize()
             .map_err(|e| AppError::Device(e.to_string()))?;
         a.connect(
@@ -3246,7 +3441,7 @@ pub mod commands {
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )?
             .ok_or_else(|| AppError::NotFound("perangkat".into()))?;
-        let mut a = sync::service::build_adapter(&adapter_name, &config_json);
+        let mut a = sync::service::build_adapter(&adapter_name, &config_json)?;
         a.initialize()
             .map_err(|e| AppError::Device(e.to_string()))?;
         a.connect(
@@ -3331,6 +3526,60 @@ pub mod commands {
         Ok(())
     }
 
+    // ---------- keputusan lembur (leave.approve: supervisor dsb) ----------
+    /// Setujui/tolak pengajuan lembur â€” jalur tunggal agar status tidak
+    /// bisa diubah sembarangan lewat edit generik.
+    #[tauri::command]
+    pub fn overtime_decide(
+        state: tauri::State<AppState>,
+        token: String,
+        request_id: String,
+        approve: bool,
+    ) -> Result<String, AppError> {
+        let s = require(&state, &token, "leave.approve")?;
+        apply_overtime_decision(&state.repo, &request_id, approve, &s.username)?;
+        Ok("ok".into())
+    }
+
+    /// Inti keputusan lembur: hanya pending yang boleh diputuskan sekali
+    /// (NotFound/Conflict dijaga), tulis status + approved_by + decided_at + audit.
+    fn apply_overtime_decision(
+        repo: &Repo,
+        request_id: &str,
+        approve: bool,
+        actor: &str,
+    ) -> AppResult<()> {
+        let row: Option<String> = repo.query_one(
+            "SELECT status FROM overtime_requests WHERE id=?1",
+            &[&request_id.to_string()],
+            |r| r.get(0),
+        )?;
+        let Some(status) = row else {
+            return Err(AppError::NotFound("pengajuan lembur".into()));
+        };
+        if status != "pending" {
+            return Err(AppError::Conflict("pengajuan sudah diputuskan".into()));
+        }
+        let new_status = if approve { "approved" } else { "rejected" };
+        repo.exec(
+            "UPDATE overtime_requests SET status=?1, approved_by=?2, decided_at=?3 WHERE id=?4",
+            &[
+                &new_status.to_string(),
+                &actor.to_string(),
+                &now(),
+                &request_id.to_string(),
+            ],
+        )?;
+        repo.insert_audit(
+            actor,
+            "overtime_decide",
+            "overtime_requests",
+            request_id,
+            new_status,
+        )?;
+        Ok(())
+    }
+
     // ---------- saldo cuti ----------
     #[tauri::command]
     pub fn leave_balances(
@@ -3378,6 +3627,12 @@ pub mod commands {
         if trimmed.chars().count() < 2 {
             return Err(AppError::Validation("kata kunci minimal 2 karakter".into()));
         }
+        // Batas wajar: kata kunci raksasa hanya buang tenaga LIKE di 2 tabel.
+        if trimmed.chars().count() > 100 {
+            return Err(AppError::Validation(
+                "kata kunci terlalu panjang (maks. 100 karakter)".into(),
+            ));
+        }
         // Escape wildcard LIKE agar %/_ dicari harfiah.
         let esc = trimmed
             .replace('\\', "\\\\")
@@ -3389,7 +3644,7 @@ pub mod commands {
             &[&q],
             |r| {
                 Ok(serde_json::json!({"kind": "karyawan", "id": r.get::<_, String>(0)?,
-                    "label": format!("{} — {}", r.get::<_, String>(1)?, r.get::<_, String>(2)?),
+                    "label": format!("{} â€” {}", r.get::<_, String>(1)?, r.get::<_, String>(2)?),
                     "sub": r.get::<_, String>(3)?}))
             },
         )?;
@@ -3470,7 +3725,7 @@ pub mod commands {
         // Toleran: boleh dengan atau tanpa baris header. Bila baris pertama
         // justru berisi data (kolom tanggal valid), perlakukan sebagai data.
         // Bila header ada (mis. hasil ekspor: nik,nama,shift,efektif,akhir),
-        // kolom dipetakan BY NAMA sehingga roundtrip ekspor→impor berfungsi.
+        // kolom dipetakan BY NAMA sehingga roundtrip eksporâ†’impor berfungsi.
         let mut records: Vec<Vec<String>> = vec![];
         let headers: Vec<String> = rdr
             .headers()
@@ -3872,7 +4127,7 @@ pub mod commands {
             let mut codes = vec![ov[0].shift_a.clone(), ov[0].shift_b.clone()];
             codes.sort();
             assert_eq!(codes, vec!["PAGI".to_string(), "SIANG".to_string()]);
-            // Tutup penugasan pertama sebelum yang kedua mulai → bentrok hilang.
+            // Tutup penugasan pertama sebelum yang kedua mulai â†’ bentrok hilang.
             st.repo
                 .exec(
                     "UPDATE shift_assignments SET end_date='2026-05-09' WHERE id='o1'",
@@ -3961,7 +4216,7 @@ pub mod commands {
             assert_eq!(n, 0);
             // Keputusan kedua ditolak (konflik).
             assert!(apply_swap_decision(&st.repo, "sw2", true, "tester").is_err());
-            // ID tak dikenal → NotFound.
+            // ID tak dikenal â†’ NotFound.
             assert!(apply_swap_decision(&st.repo, "tidak-ada", true, "tester").is_err());
         }
 
@@ -4013,12 +4268,102 @@ pub mod commands {
                 )
                 .unwrap();
             assert!(decided.is_some());
-            // Keputusan kedua → Conflict.
+            // Keputusan kedua â†’ Conflict.
             assert!(apply_leave_decision(&st.repo, "l1", true, "sup").is_err());
-            // Yang sudah approved tidak boleh disentuh lagi → Conflict.
+            // Yang sudah approved tidak boleh disentuh lagi â†’ Conflict.
             assert!(apply_leave_decision(&st.repo, "l2", false, "sup").is_err());
-            // ID tak dikenal → NotFound.
+            // ID tak dikenal â†’ NotFound.
             assert!(apply_leave_decision(&st.repo, "tidak-ada", true, "sup").is_err());
+        }
+
+        #[test]
+        fn overtime_decide_pending_sekali_saja() {
+            let st = test_state();
+            st.repo
+                .exec(
+                    "INSERT INTO employees (id, nik, name, hire_date, status, created_at, updated_at)
+                     VALUES ('e1','N1','Uji','2024-01-01','aktif','2026-01-01 00:00:00','2026-01-01 00:00:00')",
+                    &[],
+                )
+                .unwrap();
+            for (id, status) in [("o1", "pending"), ("o2", "approved")] {
+                st.repo
+                    .exec(
+                        "INSERT INTO overtime_requests (id, employee_id, work_date, minutes_requested, status, created_at)
+                         VALUES (?1,'e1','2026-05-10',60,?2,'2026-01-01 00:00:00')",
+                        &[&id.to_string(), &status.to_string()],
+                    )
+                    .unwrap();
+            }
+            // Tolak pengajuan pending: status + approved_by + decided_at terisi.
+            apply_overtime_decision(&st.repo, "o1", false, "sup").unwrap();
+            let (status, approved_by): (String, String) = st
+                .repo
+                .query_one(
+                    "SELECT status, approved_by FROM overtime_requests WHERE id='o1'",
+                    &[],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(status, "rejected");
+            assert_eq!(approved_by, "sup");
+            // Keputusan kedua = konflik; yang sudah diputuskan juga.
+            assert!(apply_overtime_decision(&st.repo, "o1", true, "sup").is_err());
+            assert!(apply_overtime_decision(&st.repo, "o2", false, "sup").is_err());
+            // ID tak dikenal = NotFound.
+            assert!(apply_overtime_decision(&st.repo, "tidak-ada", true, "sup").is_err());
+        }
+
+        #[test]
+        fn normalize_applicable_days_aturan_konvensi() {
+            // Kosong = default Senin-Jumat (0=Sen..6=Min).
+            assert_eq!(normalize_applicable_days("").unwrap(), "0,1,2,3,4");
+            assert_eq!(normalize_applicable_days("   ").unwrap(), "0,1,2,3,4");
+            // Normal + disortir.
+            assert_eq!(normalize_applicable_days("5,1,3").unwrap(), "1,3,5");
+            assert_eq!(normalize_applicable_days("0,6").unwrap(), "0,6");
+            // Salah: token non-angka, di luar 0..=6, ganda, kosong di tengah.
+            assert!(normalize_applicable_days("senin").is_err());
+            assert!(normalize_applicable_days("7").is_err());
+            assert!(normalize_applicable_days("1,1").is_err());
+            assert!(normalize_applicable_days("0,,3").is_err());
+        }
+
+        #[test]
+        fn guard_request_columns_blok_status() {
+            for t in ["leave_requests", "overtime_requests"] {
+                for k in ["status", "approved_by", "decided_at"] {
+                    let data = serde_json::json!({ k: "approved" });
+                    assert!(guard_request_columns(t, &data).is_err(), "{t}.{k}");
+                }
+                // Field sah tetap boleh lewat.
+                let data = serde_json::json!({"reason": "urusan keluarga"});
+                assert!(guard_request_columns(t, &data).is_ok());
+            }
+        }
+
+        #[test]
+        fn validate_value_rules_policy_dan_kuota() {
+            // attendance_policy: angka wajib valid, flag 0/1.
+            let bad = serde_json::json!({"rounding_minutes": "lima"});
+            assert!(validate_value_rules("attendance_policy", &bad).is_err());
+            let bad_min = serde_json::json!({"rounding_minutes": "0"});
+            assert!(validate_value_rules("attendance_policy", &bad_min).is_err());
+            let ok = serde_json::json!({
+                "rounding_minutes": "15", "max_early_minutes": "30",
+                "require_overtime_approval": "1", "allow_double_shift": "0"
+            });
+            assert!(validate_value_rules("attendance_policy", &ok).is_ok());
+            // leave_types: kuota tidak boleh negatif.
+            assert!(
+                validate_value_rules("leave_types", &serde_json::json!({"quota_days": "-3"}))
+                    .is_err()
+            );
+            assert!(
+                validate_value_rules("leave_types", &serde_json::json!({"quota_days": "12"}))
+                    .is_ok()
+            );
         }
 
         #[test]
@@ -4060,7 +4405,7 @@ pub mod commands {
                 update_parts("users", &serde_json::json!({"password": "rahasia123"})).unwrap();
             assert_eq!(sets, vec!["password_hash=?".to_string()]);
             assert!(vals[0].starts_with("$argon2"));
-            // null eksplisit → SET NULL; '' → dipertahankan (dilewati).
+            // null eksplisit â†’ SET NULL; '' â†’ dipertahankan (dilewati).
             let (sets, _) =
                 update_parts("shift_assignments", &serde_json::json!({"end_date": null})).unwrap();
             assert_eq!(sets, vec!["end_date=NULL".to_string()]);
@@ -4088,7 +4433,7 @@ pub mod commands {
             assert!(guard_user_delete(&st.repo, "hr", "u1").is_err());
             // User biasa bisa dihapus orang lain.
             assert!(guard_user_delete(&st.repo, "root", "u2").is_ok());
-            // ID tak dikenal → NotFound.
+            // ID tak dikenal â†’ NotFound.
             assert!(guard_user_delete(&st.repo, "root", "xx").is_err());
         }
 

@@ -1,4 +1,4 @@
-# Keterbatasan yang Diketahui (jujur, per 2026-10-17 — build 9)
+# Keterbatasan yang Diketahui (jujur, per 2026-10-17 — build 10)
 
 1. **Adapter vendor terimplementasi, BELUM teruji hardware.** ZKTeco &
    Solution (COM CZKEM: fetch log/user/provision/info) dan Hikvision
@@ -46,5 +46,24 @@
     menuncatkannya; tata letak kaya (logo/grafik/multi-kolom) tetap belum.
 15. **Backup adalah salinan level-file setelah `wal_checkpoint(TRUNCATE)`.**
     Penulisan di antara checkpoint dan salinan (hampir hanya mungkin dari
-    tugas terjadwal internal) tidak ikut dalam salinan itu dan baru masuk pada
+    tugas terjadwal internal) tidak ikut dalam salinan itu dan baru masuk
     backup berikutnya; restore menjalankan `integrity_check`.
+16. **Mundur jam perangkat tidak terdeteksi oleh checkpoint.** Checkpoint
+    memegang `event_time` maksimum per perangkat; bila jam terminal
+    dimundurkan (atau salah set), log ber-timestamp lama dianggap baris
+    lama dan dilewati senyap — enkripsi tidak ada yang bisa membedakan
+    baris mundur vs bersejarah (butuh ID urut vendor yang andal; vendor
+    tidak menjanjikan seragam). Baris lama tetap aman (tidak ganda); yang
+    hilang hanya deteksi mundurnya. Administrasi: atur jam perangkat NTP/
+    manual diperiksa berkala.
+17. **Dua punch identik dalam riak <1 detik** (sama `device_user_id` +
+    waktu + arah, mis. hardware memantul kirim dua kali) tetap ditulis
+    dua baris `raw_events` (ID unik vendor). Tidak ada ganda di hasil:
+    heuristik klaster/kouta arah menghitungnya `duplicate_count` dan
+    clock-out tetap event ≥5 menit — hanya detail antrean yang memuat
+    keduanya; arsitektur pembacaan log retry aman.
+18. **Saldo cuti dihitung sepanjang sejarah** (`kuota − terpakai approved`
+    semua tahun); belum ada aturan periode (mulai ulang per tahun,
+    carryover, jatuh tempo). UI diberi label "sepanjang sejarah" agar
+    angka tidak mengklaim saldo tahun-berjalan. Perhitungan berbasis
+    periode menunggu kebijakan HR final.

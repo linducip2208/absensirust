@@ -7,9 +7,20 @@ use std::path::{Path, PathBuf};
 pub fn backup_db(db_path: &Path, backup_dir: &Path, keep: usize) -> AppResult<PathBuf> {
     std::fs::create_dir_all(backup_dir)?;
     let stamp = crate::timex::now_wib_string().replace([':', ' '], "-");
-    let dest = backup_dir.join(format!("attendx-backup-{stamp}.db"));
+    let mut dest = backup_dir.join(format!("attendx-backup-{stamp}.db"));
+    // Dua backup dalam satu detik tidak boleh saling menimpa — tambah suffix.
+    let mut i = 0u32;
+    while dest.exists() {
+        i += 1;
+        dest = backup_dir.join(format!("attendx-backup-{stamp}-{i}.db"));
+    }
     std::fs::copy(db_path, &dest)?;
-    validate_sqlite(&dest)?;
+    // Validasi TYANG: header + integrity_check; gagal → buang file rusak
+    // sebelum menimpa file backup lama via rotasi.
+    if let Err(e) = validate_backup(&dest) {
+        let _ = std::fs::remove_file(&dest);
+        return Err(e);
+    }
     rotate(backup_dir, keep)?;
     Ok(dest)
 }
@@ -47,9 +58,15 @@ pub fn validate_backup(path: &Path) -> AppResult<()> {
 }
 
 fn rotate(dir: &Path, keep: usize) -> AppResult<()> {
+    // Hanya file backup milik sistem ("attendx-backup-*.db") yang dirotasi;
+    // salinan pengaman pre-restore & file lain jangan dihapus tersasar.
     let mut files: Vec<_> = std::fs::read_dir(dir)?
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().map(|x| x == "db").unwrap_or(false))
+        .filter(|e| {
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            name.starts_with("attendx-backup-") && name.ends_with(".db")
+        })
         .collect();
     files.sort_by_key(|e| e.file_name());
     while files.len() > keep.max(1) {
@@ -114,5 +131,50 @@ mod tests {
         let bad = dir.path().join("bad.db");
         std::fs::write(&bad, b"bukan sqlite").unwrap();
         assert!(restore_db(&dir.path().join("app.db"), &bad).is_err());
+    }
+    #[test]
+    fn backup_dalam_satu_detik_tak_saling_timpa() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("app.db");
+        {
+            let c = rusqlite::Connection::open(&db).unwrap();
+            c.execute_batch("CREATE TABLE t (a TEXT);").unwrap();
+        }
+        let bdir = dir.path().join("backups");
+        let a = backup_db(&db, &bdir, 100).unwrap();
+        let b = backup_db(&db, &bdir, 100).unwrap();
+        assert!(a.exists() && b.exists());
+        assert_ne!(a, b, "dua backup dalam detik sama harus beda nama");
+    }
+    #[test]
+    fn rotate_tidak_menyentuh_pre_restore_dan_file_lain() {
+        let dir = tempfile::tempdir().unwrap();
+        let b = dir.path().join("b");
+        std::fs::create_dir_all(&b).unwrap();
+        // Salinan pengaman pre-restore + file asing harus selamat.
+        for n in [
+            "app.pre-restore-2026-10-13-08-00-00.db",
+            "mitra-db-lama.db",
+            "attendx-backup-2026-01-01-00-00-01.db",
+            "attendx-backup-2026-01-02-00-00-01.db",
+        ] {
+            std::fs::write(b.join(n), b"").unwrap();
+        }
+        rotate(&b, 1).unwrap();
+        let after: Vec<String> = std::fs::read_dir(&b)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        assert!(after.contains(&"app.pre-restore-2026-10-13-08-00-00.db".to_string()));
+        assert!(after.contains(&"mitra-db-lama.db".to_string()));
+        // Hanya satu attendx-backup tersisa (keep=1).
+        assert_eq!(
+            after
+                .iter()
+                .filter(|n| n.starts_with("attendx-backup-"))
+                .count(),
+            1
+        );
     }
 }

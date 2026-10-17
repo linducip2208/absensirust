@@ -257,7 +257,7 @@ mod tests {
             .query_one("SELECT COUNT(*) FROM schema_migrations", &[], |x| x.get(0))
             .unwrap()
             .unwrap();
-        assert!(v >= 9);
+        assert!(v >= 10);
     }
     #[test]
     fn ingest_is_idempotent() {

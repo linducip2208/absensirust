@@ -280,6 +280,10 @@ impl DeviceAdapter for ZktecoAdapter {
 /// Format checkpoint ditulis oleh adapter ini: `"YYYY-MM-DD HH:MM:SS"`.
 fn checkpoint_time(checkpoint: &str) -> Option<String> {
     let cp = checkpoint.trim();
+    // Non-ASCII (DB rusak/salah isi) → jangan diiris byte, langsung dari awal.
+    if !cp.is_ascii() {
+        return None;
+    }
     if cp.len() == 19
         && cp.as_bytes()[4] == b'-'
         && cp.as_bytes()[13] == b':'

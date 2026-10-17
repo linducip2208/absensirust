@@ -52,9 +52,10 @@ describe('kontrak IPC: kunci argumen harus snake_case persis backend', () => {
       ['token', 'device_id', 'device_user_id', 'name']);
     await expectKeys(() => api.deviceRegistry('t'), 'device_registry', ['token']);
   });
-  it('izin & cuti', async () => {
+  it('izin, cuti & lembur', async () => {
     await expectKeys(() => api.leaveBalances(), 'leave_balances', ['token']);
     await expectKeys(() => api.leaveDecide('r1', true), 'leave_decide', ['token', 'request_id', 'approve']);
+    await expectKeys(() => api.overtimeDecide('r2', false), 'overtime_decide', ['token', 'request_id', 'approve']);
     await expectKeys(() => api.saveLeaveAttachment('r1', 'p'), 'save_leave_attachment',
       ['token', 'request_id', 'src_path']);
   });
@@ -91,6 +92,26 @@ describe('kontrak IPC: kunci argumen harus snake_case persis backend', () => {
   it('file + lain-lain', async () => {
     await expectKeys(() => api.saveEmployeePhoto('e', 'p'), 'save_employee_photo',
       ['token', 'employee_id', 'src_path']);
+    await expectKeys(() => api.importCommit([]), 'employee_import_commit', ['token', 'rows']);
+    await expectKeys(() => api.scheduleImportCommit([]), 'schedule_import_commit', ['token', 'rows']);
+    await expectKeys(() => api.attendanceReview(), 'attendance_review', ['token']);
+  });
+  it('auth + sesi', async () => {
+    await expectKeys(() => api.hasAdmin(), 'has_admin', []);
+    await expectKeys(() => api.login('u', 'p'), 'login', ['username', 'password']);
+    await expectKeys(() => api.logout(), 'logout', ['token']);
+  });
+  it('sistem: pengaturan, scheduler, sync, backup, kesehatan, pencarian, diagnostik', async () => {
+    await expectKeys(() => api.settingsGet(), 'settings_get', ['token']);
+    await expectKeys(() => api.settingsSet('backup_auto', '1'), 'settings_set', ['token', 'key', 'value']);
+    await expectKeys(() => api.schedulerGet(), 'scheduler_get', ['token']);
+    await expectKeys(() => api.schedulerSet(true), 'scheduler_set', ['token', 'enabled']);
+    await expectKeys(() => api.syncRunAll(), 'sync_run_all', ['token']);
+    await expectKeys(() => api.backupCreate(), 'backup_create', ['token']);
+    await expectKeys(() => api.backupRestore('f'), 'backup_restore', ['token', 'file']);
+    await expectKeys(() => api.healthCheck(), 'health_check', ['token']);
+    await expectKeys(() => api.searchGlobal('budi'), 'search_global', ['token', 'query']);
+    await expectKeys(() => api.diagnosticsBundle(), 'diagnostics_bundle', ['token']);
   });
 });
 

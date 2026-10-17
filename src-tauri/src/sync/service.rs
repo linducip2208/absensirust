@@ -29,19 +29,21 @@ pub struct SyncStats {
 /// Bangun adapter nyata berdasar nama + config JSON perangkat.
 /// `config_json`: `{"port":4370,"machine":1}` (ZK) atau
 /// `{"port":8000,"username":"admin","password":"..."}` (Hikvision).
-pub fn build_adapter(adapter_name: &str, config_json: &str) -> Box<dyn DeviceAdapter> {
+pub fn build_adapter(adapter_name: &str, config_json: &str) -> AppResult<Box<dyn DeviceAdapter>> {
     match adapter_name {
-        "zkteco-terminal" => Box::new(ZktecoAdapter::new(config_json)),
-        "solution-terminal" => Box::new(SolutionAdapter::new(config_json)),
-        "hikvision-terminal" => Box::new(HikvisionAdapter::new(config_json)),
-        "timetech-ac6" => Box::new(TimetechAc6Adapter),
-        _ if adapter_name.starts_with("mock") || adapter_name.is_empty() => {
-            Box::new(MockAdapter::new_simulated("generic", vec![]))
+        "zkteco-terminal" => Ok(Box::new(ZktecoAdapter::new(config_json))),
+        "solution-terminal" => Ok(Box::new(SolutionAdapter::new(config_json))),
+        "hikvision-terminal" => Ok(Box::new(HikvisionAdapter::new(config_json))),
+        "timetech-ac6" => Ok(Box::new(TimetechAc6Adapter)),
+        // Tambalan/nama belum diatur → tiruan jujur (ditandai SIMULATED).
+        a if a.starts_with("mock") || a.is_empty() => {
+            Ok(Box::new(MockAdapter::new_simulated("generic", vec![])))
         }
-        _ => {
-            // Fallback aman: mock ditandai SIMULATED agar tidak diklaim hardware nyata.
-            Box::new(MockAdapter::new_simulated(adapter_name, vec![]))
-        }
+        // Nama tidak dikenal = salah konfigurasi: jangan diam-diam memakai
+        // tiruan — tolak dengan pesan jelas agar data nyata tidak tertukar.
+        other => Err(AppError::Validation(format!(
+            "adapter \"{other}\" tidak dikenal — pilih: zkteco-terminal, solution-terminal, hikvision-terminal, timetech-ac6, atau mock*"
+        ))),
     }
 }
 
@@ -92,7 +94,8 @@ pub fn sync_device(
                     "INSERT INTO device_connection_log (id, device_id, event, detail, created_at) VALUES (?1,?2,'sync_ok',?3,?4)",
                     &[&uuid::Uuid::new_v4().to_string(), &did, &format!("fetched={} inserted={}", s.fetched, s.inserted), &now],
                 )?;
-                return Ok(s);
+                // attempts mencerminkan usaha sungguhan (biasanya 1, ×retry).
+                return Ok(SyncStats { attempts, ..s });
             }
             Err(e) => {
                 last_err = e.to_string();

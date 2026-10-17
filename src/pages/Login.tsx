@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { api, setSession } from '../api';
 import { Field, useToast } from '../components/ui';
 
 export default function Login() {
   const nav = useNavigate();
+  const loc = useLocation() as { state?: { from?: string } };
   const toast = useToast();
   const [needsSetup, setNeedsSetup] = useState(false);
   const [username, setUsername] = useState('');
@@ -29,7 +30,9 @@ export default function Login() {
       } else {
         const res = await api.login(username.trim(), password);
         setSession(res.token, res.username, res.role);
-        nav('/');
+        // Kembali ke halaman yang memaksa redirect (atau dashboard).
+        const from = loc.state?.from;
+        nav(from && from.startsWith('/') ? from : '/');
       }
     } catch (err) {
       toast.push('error', err instanceof Error ? err.message : String(err));

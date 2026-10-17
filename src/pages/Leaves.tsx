@@ -16,7 +16,7 @@ const LEAVE: Column[] = [
   { key: 'end_date', label: 'Selesai', type: 'date', required: true },
   { key: 'reason', label: 'Alasan', type: 'textarea' },
   { key: 'attachment_path', label: 'Lampiran (via unggah di bawah)', hideInTable: true, readOnly: true },
-  { key: 'status', label: 'Status', type: 'select', badge: true, options: [{ value: 'pending', label: 'Menunggu' }, { value: 'approved', label: 'Disetujui' }, { value: 'rejected', label: 'Ditolak' }] },
+  { key: 'status', label: 'Status', type: 'select', badge: true, readOnly: true, options: [{ value: 'pending', label: 'Menunggu' }, { value: 'approved', label: 'Disetujui' }, { value: 'rejected', label: 'Ditolak' }] },
   { key: 'approved_by', label: 'Disetujui oleh', readOnly: true },
 ];
 const OT: Column[] = [
@@ -24,7 +24,7 @@ const OT: Column[] = [
   { key: 'work_date', label: 'Tanggal', type: 'date', required: true },
   { key: 'minutes_requested', label: 'Menit diajukan', type: 'number', required: true },
   { key: 'reason', label: 'Alasan', type: 'textarea' },
-  { key: 'status', label: 'Status', type: 'select', badge: true, options: [{ value: 'pending', label: 'Menunggu' }, { value: 'approved', label: 'Disetujui' }, { value: 'rejected', label: 'Ditolak' }] },
+  { key: 'status', label: 'Status', type: 'select', badge: true, readOnly: true, options: [{ value: 'pending', label: 'Menunggu' }, { value: 'approved', label: 'Disetujui' }, { value: 'rejected', label: 'Ditolak' }] },
   { key: 'approved_by', label: 'Disetujui oleh', readOnly: true },
 ];
 
@@ -44,22 +44,34 @@ export default function Leaves() {
       {tab === 'izin' && (
         <>
           <Crud table="leave_requests" title="Pengajuan izin/cuti" columns={LEAVE} orderBy="start_date" />
-          {['super_admin', 'hr_admin', 'supervisor'].includes(getUser()?.role ?? '') && <DecisionCard />}
+          {['super_admin', 'hr_admin', 'supervisor'].includes(getUser()?.role ?? '') && (
+            <DecisionCard table="leave_requests" />
+          )}
           <AttachmentCard />
           <BalanceCard />
         </>
       )}
-      {tab === 'lembur' && <Crud table="overtime_requests" title="Pengajuan lembur" columns={OT} orderBy="work_date" />}
+      {tab === 'lembur' && (
+        <>
+          <Crud table="overtime_requests" title="Pengajuan lembur" columns={OT} orderBy="work_date" />
+          {['super_admin', 'hr_admin', 'supervisor'].includes(getUser()?.role ?? '') && (
+            <DecisionCard table="overtime_requests" />
+          )}
+        </>
+      )}
       {tab === 'jenis' && <Crud table="leave_types" title="Jenis cuti" columns={LEAVE_TYPE} orderBy="code" />}
     </Layout>
   );
 }
 
-/** Keputusan pengajuan izin/cuti: memakai perintah khusus `leave_decide`
- *  (butuh leave.approve) — bukan table_update generik yang butuh leave.manage,
- *  sehingga supervisor bisa memutuskan tanpa izin manajemen penuh. */
-function DecisionCard() {
+/** Keputusan pengajuan (izin/cuti/lembur): memakai perintah khusus
+ *  `leave_decide`/`overtime_decide` (butuh leave.approve) — bukan table_update
+ *  generik yang butuh leave.manage, sehingga supervisor bisa memutuskan
+ *  tanpa izin manajemen penuh. Status berubah hanya lewat jalur ini agar
+ *  approved_by + decided_at selalu terisi benar. */
+function DecisionCard({ table }: { table: 'leave_requests' | 'overtime_requests' }) {
   const toast = useToast();
+  const isLeave = table === 'leave_requests';
   const [reqs, setReqs] = useState<Row[]>([]);
   const [names, setNames] = useState<Record<string, string>>({});
   const [sel, setSel] = useState('');
@@ -67,10 +79,10 @@ function DecisionCard() {
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(() => {
-    api.tableList('leave_requests', 1, 200, '', 'start_date', 'desc')
+    api.tableList(table, 1, 200, '', isLeave ? 'start_date' : 'work_date', 'desc')
       .then((r) => setReqs(r.rows.filter((x) => String(x.status) === 'pending')))
       .catch((e: Error) => toast.push('error', e.message));
-  }, [toast]);
+  }, [toast, table, isLeave]);
   useEffect(() => {
     load();
     fetchEmployeeNameMap().then(setNames).catch(() => {});
@@ -80,7 +92,8 @@ function DecisionCard() {
     if (!deciding) return;
     setBusy(true);
     try {
-      await api.leaveDecide(deciding.id, approve);
+      if (isLeave) await api.leaveDecide(deciding.id, approve);
+      else await api.overtimeDecide(deciding.id, approve);
       toast.push('success', approve ? 'Pengajuan disetujui' : 'Pengajuan ditolak');
       setSel('');
       load();
@@ -102,7 +115,9 @@ function DecisionCard() {
             <option value="">— Pilih —</option>
             {reqs.map((x) => (
               <option key={String(x.id)} value={String(x.id)}>
-                {names[String(x.employee_id)] ?? String(x.employee_id)} · {String(x.start_date)} s/d {String(x.end_date)}
+                {isLeave
+                  ? `${names[String(x.employee_id)] ?? String(x.employee_id)} · ${String(x.start_date)} s/d ${String(x.end_date)}`
+                  : `${names[String(x.employee_id)] ?? String(x.employee_id)} · ${String(x.work_date)} (${String(x.minutes_requested)} menit)`}
               </option>
             ))}
           </select>
@@ -119,7 +134,9 @@ function DecisionCard() {
         <ConfirmDialog
           title={deciding.approve ? 'Setujui pengajuan?' : 'Tolak pengajuan?'}
           body={deciding.approve
-            ? 'Status akan menjadi approved dan terhitung pada saldo cuti.'
+            ? (isLeave
+              ? 'Status akan menjadi approved dan terhitung pada saldo cuti.'
+              : 'Status akan menjadi approved; menit lembur disetujui masuk perhitungan laporan.')
             : 'Status akan menjadi rejected.'}
           confirmLabel={deciding.approve ? 'Setujui' : 'Tolak'}
           onCancel={() => setDeciding(null)}
@@ -196,7 +213,7 @@ function BalanceCard() {
   return (
     <div className="card mt-3">
       <div className="card-header d-flex justify-content-between align-items-center">
-        <h3 className="card-title">Saldo cuti (kuota − terpakai approved)</h3>
+        <h3 className="card-title">Saldo cuti (kuota − terpakai approved, sepanjang sejarah)</h3>
         <button className="btn btn-outline-primary btn-sm" onClick={() => setOpen((o) => !o)}>
           {open ? 'Sembunyikan' : 'Tampilkan'}
         </button>
